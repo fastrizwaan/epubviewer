@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Epub Viewer
+Exec=epubviewer
+Icon=io.github.fastrizwaan.epubviewer
+Categories=Utility;

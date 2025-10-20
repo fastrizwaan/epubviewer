@@ -1,0 +1,12 @@
+flatpak/.flatpak-builder
+flatpak/repo
+flatpak/build-dir
+.flatpak-builder
+flatpak/*.flatpak
+
+.codegpt
+
+src/__pycache__
+build
+epubviewer.egg-info
+src/epubviewer.egg-info
