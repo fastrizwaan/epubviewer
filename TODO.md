@@ -50,4 +50,12 @@ library card:
 App Themes: Sepia, Solarized dark, atom one, etc.
 
 - apply css to gtk and html; perhaps overaly colors?  
-  
+
+TTS:
+1. also bundle "Kokoro-82M-v1.1-zh" kokoro tts 1.1 with voices; af_maple, af_sol, bf_vale.
+2. refer kokoro-tts for language, speed, voices.
+
+SOURCE CODE:
+1. make methods/variables part of each class, so that they can be remove and inserted easily.
+2. make widget creation etc. from methods instead of many lines of code in the init. like setup_toolbar(); or setup_sidebar() etc.
+
