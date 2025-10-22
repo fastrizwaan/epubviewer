@@ -239,8 +239,6 @@ def highlight_markup(text: str, query: str) -> str:
 # -------------------------
 class TTSEngine:
     def __init__(self, webview_getter, base_temp_dir=None, kokoro_model_path=None, voices_bin_path=None):
-        import tempfile, threading, time, os, re
-        from gi.repository import GLib
 
         self.webview_getter = webview_getter
         self.base_temp_dir = base_temp_dir or tempfile.gettempdir()
