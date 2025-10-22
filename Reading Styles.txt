@@ -1,0 +1,8 @@
+Reader Styles:
+
+Newspaper 1 - Width 200px; Font Charis, 12, Gap 21, full justify, 1.25 line height, margins 20
+Newspaper 2 - Width 300px; Font Charis, 12, Gap 30, full justify, 1.25 line height, margins 20
+Magazine  1 - Width 200px; Font Charis, 12, Gap 21, full justify, 1.5 line height, margins 30
+Magazine  2 - Width 300px; Font Charis, 12, Gap 30, full justify, 1.5 line height, margins 30
+Text Book 1 - Width 400px; Font Charis, 12, Gap 120, full justify, 1.5 line height, margins T/B - 120, L/R - 20
+Text Book 1 - Width 500px; Font Charis, 12, Gap 120, full justify, 1.5 line height, margins T/B - 120, L/R - 20
