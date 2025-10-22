@@ -694,10 +694,8 @@ class EPubViewer(Adw.ApplicationWindow):
         self.last_cover_path = None
         self.book_path = None
 
-        # NEW: column settings
-        self.column_mode_use_width = False   # False => use column-count; True => use column-width
-        self.column_count = 1                # 1..10
-        self.column_width_px = 200           # 100..500
+        # NEW: column settings - only width-based mode
+        self.column_width_px = 300           # 50..500 px
         self._column_gap = 32                # px gap between columns
 
         
@@ -1089,22 +1087,17 @@ class EPubViewer(Adw.ApplicationWindow):
 
 
 
-        # --- NEW: Columns menu button (replaces spinner+dropdown). Hidden by default; shown in reading mode only. ---
+        # --- NEW: Columns menu button - only width-based columns. Hidden by default; shown in reading mode only. ---
         self.columns_menu_button = Gtk.MenuButton()
         self.columns_menu_button.set_icon_name("columns-symbolic")
         self.columns_menu_button.add_css_class("flat")
-        # build Gio.Menu model with two submenus
+        # build Gio.Menu model with column width options
         menu = Gio.Menu()
 
-        columns_menu = Gio.Menu()
-        for i in range(1, 11):
-            columns_menu.append(f"{i} Column{'s' if i>1 else ''}", f"app.set-columns({i})")
-        menu.append_submenu("Columns (fixed)", columns_menu)
-
         width_menu = Gio.Menu()
-        for w in (50,100,150,200,300,350,400,450,500):
+        for w in (50,100,150,200,250,300,350,400,450,500):
             width_menu.append(f"{w}px width", f"app.set-column-width({w})")
-        menu.append_submenu("Use column width", width_menu)
+        menu.append_submenu("Column width", width_menu)
         self.columns_menu_button.set_menu_model(menu)
         self.columns_menu_button.set_visible(False)
         self.content_header.pack_end(self.columns_menu_button)
@@ -2386,37 +2379,19 @@ class EPubViewer(Adw.ApplicationWindow):
     def _update_column_css_via_js(self):
         """Update column CSS rules via JavaScript without reloading the page.
         
-        This allows changing column settings while maintaining the current scroll
-        position and column index. The JavaScript resize handler automatically
-        recalculates metrics and restores the user's position.
+        Dynamically switches between column layout and single-column vertical scroll
+        based on available viewport width.
         """
         if not getattr(self, "webview", None):
             return
         
-        # Determine column CSS based on current settings
-        if self.column_mode_use_width:
-            col_decl = f"column-width: {self.column_width_px}px; -webkit-column-width: {self.column_width_px}px;"
-        else:
-            col_decl = f"column-count: {self.column_count}; -webkit-column-count: {self.column_count};"
-        
         gap_val = getattr(self, "_column_gap", 32)
-        gap_decl = f"column-gap: {gap_val}px; -webkit-column-gap: {gap_val}px;"
-        
         mt = int(getattr(self, "page_margin_top", 12))
         mr = int(getattr(self, "page_margin_right", 12))
         mb = int(getattr(self, "page_margin_bottom", 12))
         ml = int(getattr(self, "page_margin_left", 12))
-        padding_decl = f"padding: {mt}px {mr}px {mb}px {ml}px;"
         
-        # Determine if single column
-        is_single = (not self.column_mode_use_width and self.column_count == 1)
-        
-        if is_single:
-            overflow_decl = "overflow-x: hidden !important; overflow-y: auto !important;"
-        else:
-            overflow_decl = "overflow-x: auto; overflow-y: hidden;"
-        
-        # JavaScript to update the style and trigger resize
+        # JavaScript to dynamically apply correct layout
         js = f"""
         (function(){{
             try {{
@@ -2427,41 +2402,72 @@ class EPubViewer(Adw.ApplicationWindow):
                     return;
                 }}
                 
-                // Get current column position BEFORE changes
-                const oldMetrics = window.getContainerMetrics ? window.getContainerMetrics() : null;
-                const oldCol = window.getCurrentColumnIndex ? window.getCurrentColumnIndex() : 0;
-                console.log('📍 Current position: column ' + oldCol);
+                // Calculate if we can fit multiple columns
+                const clientWidth = container.clientWidth || window.innerWidth;
+                const availableWidth = clientWidth - {ml} - {mr};
+                const colWidth = {self.column_width_px};
+                const gap = {gap_val};
                 
-                // Update CSS properties directly on the container
-                container.style.cssText = `
-                    {col_decl}
-                    {gap_decl}
-                    column-fill: auto;
-                    -webkit-column-fill: auto;
-                    {padding_decl}
-                    width: 100vw;
-                    height: 100vh;
-                    {overflow_decl}
-                    box-sizing: border-box;
-                    position: relative;
-                `;
+                // Calculate how many columns would fit
+                const wouldFitCols = Math.max(1, Math.floor((availableWidth + gap) / (colWidth + gap)));
                 
-                // Update global column count tracking for JS
-                window.currentColumnCount = {self.column_count if not self.column_mode_use_width else 2};
+                console.log('📐 Layout calc: availableW=' + availableWidth + 'px, colW=' + colWidth + 'px, would fit ' + wouldFitCols + ' cols');
                 
-                // Trigger resize event to recalculate metrics and maintain position
-                // The resize handler will automatically call scrollToColumnIndex(oldCol)
-                setTimeout(() => {{
-                    console.log('🔄 Triggering resize event to maintain position');
-                    window.dispatchEvent(new Event('resize'));
-                }}, 50);
+                if (wouldFitCols === 1) {{
+                    // SINGLE COLUMN MODE: Disable columns, use vertical scroll
+                    console.log('📖 Switching to single-column vertical scroll mode');
+                    container.style.cssText = `
+                        column-width: unset;
+                        -webkit-column-width: unset;
+                        column-count: unset;
+                        -webkit-column-count: unset;
+                        column-gap: unset;
+                        -webkit-column-gap: unset;
+                        column-fill: unset;
+                        -webkit-column-fill: unset;
+                        padding: {mt}px {mr}px {mb}px {ml}px;
+                        width: 100%;
+                        height: 100vh;
+                        overflow-x: hidden;
+                        overflow-y: auto;
+                        box-sizing: border-box;
+                        position: relative;
+                    `;
+                    window.currentColumnWidth = null;
+                    window.isSingleColumnMode = true;
+                }} else {{
+                    // MULTI-COLUMN MODE: Use column layout with horizontal scroll
+                    console.log('📰 Switching to multi-column mode (' + wouldFitCols + ' cols)');
+                    container.style.cssText = `
+                        column-width: {self.column_width_px}px;
+                        -webkit-column-width: {self.column_width_px}px;
+                        column-gap: {gap_val}px;
+                        -webkit-column-gap: {gap_val}px;
+                        column-fill: auto;
+                        -webkit-column-fill: auto;
+                        padding: {mt}px {mr}px {mb}px {ml}px;
+                        width: 100vw;
+                        height: 100vh;
+                        overflow-x: auto;
+                        overflow-y: hidden;
+                        box-sizing: border-box;
+                        position: relative;
+                    `;
+                    window.currentColumnWidth = {self.column_width_px};
+                    window.isSingleColumnMode = false;
+                    
+                    // Trigger resize to recalculate and snap
+                    setTimeout(() => {{
+                        console.log('🔄 Triggering resize for column snapping');
+                        window.dispatchEvent(new Event('resize'));
+                    }}, 50);
+                }}
                 
                 console.log('✓ Column CSS updated successfully');
             }} catch(e) {{
                 console.log('❌ Error updating column CSS:', e);
             }}
-        }})();
-        """
+        }})();"""
         
         try:
             self.webview.evaluate_javascript(js, -1, None, None, None, None, None)
@@ -2470,35 +2476,6 @@ class EPubViewer(Adw.ApplicationWindow):
                 self.webview.run_javascript(js, None, None, None)
             except Exception:
                 pass    
-                
-    def set_columns(self, n):
-        """Set number of columns (from menu action).
-        
-        Updates the column count and applies changes via JavaScript, maintaining
-        the user's current reading position.
-        """
-        try:
-            n = int(n)
-        except Exception:
-            return
-        
-        self.column_mode_use_width = False
-        self.column_count = max(1, min(10, n))
-        print(f"✓ Set columns to {self.column_count}")
-        
-        # Update CSS via JavaScript instead of reloading page
-        try:
-            if self.book and self.items:
-                self._update_column_css_via_js()
-                print(f"✓ Updated column CSS (staying at current position)")
-        except Exception as e:
-            print(f"✗ Column CSS update failed: {e}, falling back to display_page")
-            # Fallback to full reload only if JS update fails
-            try:
-                self.display_page()
-            except Exception:
-                pass
-
 
     def set_column_width(self, w):
         """Set column width in pixels (from menu action).
@@ -2511,7 +2488,6 @@ class EPubViewer(Adw.ApplicationWindow):
         except Exception:
             return
         
-        self.column_mode_use_width = True
         self.column_width_px = max(50, min(500, w))
         print(f"✓ Set column width to {self.column_width_px}px")
         
@@ -3265,11 +3241,8 @@ class EPubViewer(Adw.ApplicationWindow):
         try:
             page_css_base = (self.css_content or "") + "\n" + THEME_INJECTION_CSS
 
-            # columns
-            if self.column_mode_use_width:
-                col_decl = "column-width: {}px; -webkit-column-width: {}px;".format(self.column_width_px, self.column_width_px)
-            else:
-                col_decl = "column-count: {}; -webkit-column-count: {};".format(self.column_count, self.column_count)
+            # Always use column-width mode
+            col_decl = "column-width: {}px; -webkit-column-width: {}px;".format(self.column_width_px, self.column_width_px)
 
             gap_val = getattr(self, "_column_gap", 32)
             gap_decl = "column-gap: {}px; -webkit-column-gap: {}px;".format(gap_val, gap_val)
@@ -3282,74 +3255,51 @@ class EPubViewer(Adw.ApplicationWindow):
             ml = int(getattr(self, "page_margin_left", 12))
             padding_decl = f"padding: {mt}px {mr}px {mb}px {ml}px;"
 
-            # Determine if single column mode
-            is_single_column = (not self.column_mode_use_width and getattr(self, 'column_count', 1) == 1)
-            
-            if is_single_column:
-                # SINGLE COLUMN: Vertical scrolling
-                col_rules = """
-                    html, body {
-                        height: 100%;
-                        margin: 0;
-                        padding: 0;
-                        overflow: hidden;
-                    }
-                    .ebook-content {
-                        width: 100%;
-                        height: 100%;
-                        overflow-x: hidden !important;
-                        overflow-y: auto !important;
-                        box-sizing: border-box;
-                    """ + padding_decl + """
-                    }
-                    .ebook-content img, .ebook-content svg { max-width: 100%; height: auto; }
-                """
-            else:
-                # MULTI-COLUMN: Horizontal scrolling
-                col_rules = f"""
-                    html {{
-                        height: 100vh;
-                        overflow: hidden;
+            # Always enable both scroll directions - JavaScript will manage based on actual column count
+            col_rules = f"""
+                html {{
+                    height: 100vh;
+                    overflow: hidden;
+                }}
+                body {{
+                    margin: 0;
+                    padding: 0;
+                    height: 100vh;
+                    overflow: hidden;
+                }}
+                .ebook-content {{
+                    {col_decl}
+                    {gap_decl}
+                    {fill_decl}
+                    {padding_decl}
+                    
+                    /* Container dimensions */
+                    width: 100vw;
+                    height: 100vh;
+                    
+                    /* Reset nested columns */
+                    * {{
+                        -webkit-column-count: unset !important;
+                        column-count: unset !important;
                     }}
-                    body {{
-                        margin: 0;
-                        padding: 0;
-                        height: 100vh;
-                        overflow: hidden;
-                    }}
-                    .ebook-content {{
-                        {col_decl}
-                        {gap_decl}
-                        {fill_decl}
-                        {padding_decl}
-                        
-                        /* Container dimensions */
-                        width: 100vw;
-                        height: 100vh;
-                        
-                        /* Reset nested columns */
-                        * {{
-                            -webkit-column-count: unset !important;
-                            column-count: unset !important;
-                        }}
-                        
-                        /* Scrolling behavior */
-                        overflow-x: auto;
-                        overflow-y: hidden;
-                        
-                        /* Important for columns to work */
-                        box-sizing: border-box;
-                        position: relative;
-                    }}
-                    .ebook-content img, .ebook-content svg {{
-                        max-width: 100%;
-                        height: auto;
-                        break-inside: avoid;
-                    }}
-                    .ebook-content p, .ebook-content div {{
-                        break-inside: auto;
-                    }}
-                """
+                    
+                    /* Enable both scroll directions - JS will manage based on column count */
+                    overflow-x: auto;
+                    overflow-y: auto;
+                    
+                    /* Important for columns to work */
+                    box-sizing: border-box;
+                    position: relative;
+                }}
+                .ebook-content img, .ebook-content svg {{
+                    max-width: 100%;
+                    height: auto;
+                    break-inside: avoid;
+                }}
+                .ebook-content p, .ebook-content div {{
+                    break-inside: auto;
+                }}
+            """
 
             # user overrides (font/size/line-height/justify)
             extra = ""
@@ -3395,13 +3345,8 @@ class EPubViewer(Adw.ApplicationWindow):
             print(f"CSS generation error: {e}")
             page_css = (self.css_content or "") + "\n" + THEME_INJECTION_CSS
 
-        # Determine effective column count for JavaScript
-        if self.column_mode_use_width:
-            effective_columns = 2  # Default for width-based mode (actual will be detected)
-        else:
-            effective_columns = getattr(self, 'column_count', 1)
-        
-        print(f"📊 Injecting JS with {effective_columns} columns")
+        # Pass column width to JavaScript for dynamic detection
+        print(f"📊 Injecting JS with column width: {self.column_width_px}px")
         
         # ENHANCED COLUMN NAVIGATION JAVASCRIPT WITH DYNAMIC COLUMN DETECTION
         js_detect_columns = f"""<script>
@@ -3416,9 +3361,9 @@ class EPubViewer(Adw.ApplicationWindow):
         }};
         
         console.log('=== COLUMN SCRIPT LOADED ===');
-        console.log('Configured columns: {effective_columns}');
+        console.log('Column width: {self.column_width_px}px');
         
-        window.currentColumnCount = {effective_columns};
+        window.currentColumnWidth = {self.column_width_px};
         
         function getContainerMetrics() {{
             const container = document.querySelector('.ebook-content');
@@ -3430,24 +3375,12 @@ class EPubViewer(Adw.ApplicationWindow):
             const gap = parseFloat(style.columnGap) || 0;
             
             const clientWidth = container.clientWidth;
+            const clientHeight = container.clientHeight;
             const availableWidth = clientWidth - paddingLeft - paddingRight;
             
-            // Get ACTUAL rendered column count (works for both fixed-count and fixed-width modes)
-            let actualColCount = parseFloat(style.columnCount) || window.currentColumnCount || 1;
-            
-            // If column-count is "auto", calculate from column-width
-            if (style.columnCount === 'auto' || actualColCount === 0) {{
-                const colWidth = parseFloat(style.columnWidth);
-                if (colWidth > 0) {{
-                    // Calculate how many columns actually fit
-                    actualColCount = Math.max(1, Math.floor((availableWidth + gap) / (colWidth + gap)));
-                }} else {{
-                    actualColCount = window.currentColumnCount || 1;
-                }}
-            }}
-            
-            // Ensure we have at least 1 column
-            actualColCount = Math.max(1, Math.floor(actualColCount));
+            // Calculate actual column count based on column-width
+            const colWidth = parseFloat(style.columnWidth) || window.currentColumnWidth || 300;
+            let actualColCount = Math.max(1, Math.floor((availableWidth + gap) / (colWidth + gap)));
             
             const totalGap = gap * (actualColCount - 1);
             const columnWidth = (availableWidth - totalGap) / actualColCount;
@@ -3549,9 +3482,13 @@ class EPubViewer(Adw.ApplicationWindow):
         
         // Mouse wheel navigation
         window.addEventListener('wheel', function(e) {{
-            const metrics = getContainerMetrics();
-            if (!metrics || metrics.colCount <= 1) return;
+            // In single-column mode, allow natural scrolling
+            if (window.isSingleColumnMode) return;
             
+            const metrics = getContainerMetrics();
+            if (!metrics) return;
+            
+            // Multi-column mode: navigate by columns
             e.preventDefault();
             
             const currentCol = getCurrentColumnIndex();
@@ -3577,8 +3514,8 @@ class EPubViewer(Adw.ApplicationWindow):
             const metrics = getContainerMetrics();
             if (!metrics) return;
             
-            if (metrics.colCount === 1) {{
-                // Single column: vertical scrolling
+            if (window.isSingleColumnMode) {{
+                // Single column: Vertical scrolling only (standard browser behavior)
                 const viewH = container.clientHeight;
                 const maxY = container.scrollHeight - viewH;
                 let y = container.scrollTop;
@@ -3618,8 +3555,8 @@ class EPubViewer(Adw.ApplicationWindow):
                 }}
                 
                 if (scroll) {{
-                    console.log('⬆️⬇️ ' + e.key);
-                    smoothScrollTo(container.scrollLeft, y);
+                    console.log('⬆️⬇️ ' + e.key + ' (1-col mode)');
+                    smoothScrollTo(0, y);
                 }}
             }} else {{
                 // Multi-column: horizontal navigation
@@ -3674,33 +3611,104 @@ class EPubViewer(Adw.ApplicationWindow):
         window.addEventListener('resize', function() {{
             clearTimeout(resizeTimer);
             resizeTimer = setTimeout(function() {{
-                const metrics = getContainerMetrics();
-                if (metrics && metrics.colCount > 1) {{
-                    const currentCol = getCurrentColumnIndex();
-                    console.log('🔄 Resize - staying at column ' + currentCol);
-                    // Force recalculation after resize
-                    console.log('  New actual cols: ' + metrics.colCount + ', pageW: ' + metrics.pageWidth.toFixed(1) + 'px');
-                    scrollToColumnIndex(currentCol, false);  // Instant, no animation
-                }}
+                checkAndApplyLayout();
             }}, 400);  // Wait for sidebar animation
         }});
+        
+        // Function to check layout and apply single-column or multi-column mode
+        function checkAndApplyLayout() {{
+            const container = document.querySelector('.ebook-content');
+            if (!container) return;
+            
+            const style = getComputedStyle(container);
+            const paddingLeft = parseFloat(style.paddingLeft) || 0;
+            const paddingRight = parseFloat(style.paddingRight) || 0;
+            const clientWidth = container.clientWidth;
+            const availableWidth = clientWidth - paddingLeft - paddingRight;
+            const colWidth = window.currentColumnWidth || {self.column_width_px};
+            const gap = {getattr(self, "_column_gap", 32)};
+            
+            // Calculate how many columns would fit
+            const wouldFitCols = Math.max(1, Math.floor((availableWidth + gap) / (colWidth + gap)));
+            
+            console.log('🔍 Layout check: ' + wouldFitCols + ' cols would fit (availW=' + availableWidth + 'px, colW=' + colWidth + 'px)');
+            
+            if (wouldFitCols === 1 && !window.isSingleColumnMode) {{
+                // Switch to single-column mode
+                console.log('📖 Switching to single-column vertical scroll mode');
+                container.style.cssText = `
+                    column-width: unset;
+                    -webkit-column-width: unset;
+                    column-count: unset;
+                    -webkit-column-count: unset;
+                    column-gap: unset;
+                    -webkit-column-gap: unset;
+                    column-fill: unset;
+                    -webkit-column-fill: unset;
+                    padding: {getattr(self, "page_margin_top", 12)}px {getattr(self, "page_margin_right", 12)}px {getattr(self, "page_margin_bottom", 12)}px {getattr(self, "page_margin_left", 12)}px;
+                    width: 100%;
+                    height: 100vh;
+                    overflow-x: hidden;
+                    overflow-y: auto;
+                    box-sizing: border-box;
+                    position: relative;
+                `;
+                window.isSingleColumnMode = true;
+            }} else if (wouldFitCols > 1 && window.isSingleColumnMode !== false) {{
+                // Switch to multi-column mode
+                console.log('📰 Switching to multi-column mode (' + wouldFitCols + ' cols)');
+                container.style.cssText = `
+                    column-width: {self.column_width_px}px;
+                    -webkit-column-width: {self.column_width_px}px;
+                    column-gap: {getattr(self, "_column_gap", 32)}px;
+                    -webkit-column-gap: {getattr(self, "_column_gap", 32)}px;
+                    column-fill: auto;
+                    -webkit-column-fill: auto;
+                    padding: {getattr(self, "page_margin_top", 12)}px {getattr(self, "page_margin_right", 12)}px {getattr(self, "page_margin_bottom", 12)}px {getattr(self, "page_margin_left", 12)}px;
+                    width: 100vw;
+                    height: 100vh;
+                    overflow-x: auto;
+                    overflow-y: hidden;
+                    box-sizing: border-box;
+                    position: relative;
+                `;
+                window.isSingleColumnMode = false;
+                
+                // Snap to column after switching to multi-column
+                setTimeout(() => {{
+                    const metrics = getContainerMetrics();
+                    if (metrics && metrics.colCount > 1) {{
+                        const currentCol = getCurrentColumnIndex();
+                        console.log('🔄 Resize - staying at column ' + currentCol);
+                        scrollToColumnIndex(currentCol, false);
+                    }}
+                }}, 50);
+            }}
+        }}
+        
+        // Initial layout check on page load
+        setTimeout(() => {{
+            checkAndApplyLayout();
+        }}, 100);
         
         // Initial metrics logging
         setTimeout(() => {{
             const m = getContainerMetrics();
             if (m) {{
                 console.log('📏 Metrics:');
-                console.log('  Configured cols: ' + window.currentColumnCount);
-                console.log('  Actual cols: ' + m.colCount);
+                console.log('  Column width: ' + window.currentColumnWidth + 'px');
+                console.log('  Actual cols in viewport: ' + m.colCount);
+                console.log('  Single-column mode: ' + (window.isSingleColumnMode ? 'YES' : 'NO'));
                 console.log('  clientW: ' + m.clientWidth + 'px');
                 console.log('  availableW: ' + m.availableWidth + 'px (padding: ' + m.paddingLeft + '/' + m.paddingRight + ')');
                 console.log('  gap: ' + m.gap + 'px');
                 console.log('  columnW: ' + m.columnWidth.toFixed(1) + 'px');
                 console.log('  pageW: ' + m.pageWidth.toFixed(1) + 'px');
                 console.log('  scrollW: ' + m.container.scrollWidth + 'px');
+                console.log('  scrollH: ' + m.container.scrollHeight + 'px');
                 console.log('  maxScroll: ' + (m.container.scrollWidth - m.clientWidth) + 'px');
                 
-                if (m.colCount > 1) {{
+                if (m.colCount > 1 && !window.isSingleColumnMode) {{
                     snapScroll();
                 }}
             }}
@@ -4871,12 +4879,7 @@ class Application(Adw.Application):
             except Exception:
                 pass
 
-        # set-columns (int)
-        act = Gio.SimpleAction.new("set-columns", GLib.VariantType.new("i"))
-        act.connect("activate", lambda a, v: _action_wrapper_win("set_columns", v))
-        self.add_action(act)
-
-        # set-column-width (int)
+        # set-column-width (int) - only action needed for width-based columns
         act2 = Gio.SimpleAction.new("set-column-width", GLib.VariantType.new("i"))
         act2.connect("activate", lambda a, v: _action_wrapper_win("set_column_width", v))
         self.add_action(act2)
@@ -4896,5 +4899,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
