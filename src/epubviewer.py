@@ -2402,6 +2402,67 @@ class EPubViewer(Adw.ApplicationWindow):
                     return;
                 }}
                 
+                // Helper function to get container metrics
+                function getMetrics() {{
+                    const style = getComputedStyle(container);
+                    const paddingLeft = parseFloat(style.paddingLeft) || 0;
+                    const paddingRight = parseFloat(style.paddingRight) || 0;
+                    const gap = parseFloat(style.columnGap) || 0;
+                    const clientWidth = container.clientWidth;
+                    const availableWidth = clientWidth - paddingLeft - paddingRight;
+                    const colWidth = parseFloat(style.columnWidth) || window.currentColumnWidth || 300;
+                    let actualColCount = Math.max(1, Math.floor((availableWidth + gap) / (colWidth + gap)));
+                    const totalGap = gap * (actualColCount - 1);
+                    const columnWidth = (availableWidth - totalGap) / actualColCount;
+                    
+                    return {{
+                        container: container,
+                        clientWidth: clientWidth,
+                        availableWidth: availableWidth,
+                        paddingLeft: paddingLeft,
+                        paddingRight: paddingRight,
+                        gap: gap,
+                        colCount: actualColCount,
+                        columnWidth: columnWidth,
+                        pageWidth: columnWidth + gap
+                    }};
+                }}
+                
+                // Helper function to get current column
+                function getCurrentCol() {{
+                    const metrics = getMetrics();
+                    if (!metrics || metrics.colCount <= 1) return 0;
+                    const scrollLeft = metrics.container.scrollLeft;
+                    return Math.round(scrollLeft / metrics.pageWidth);
+                }}
+                
+                // Helper function to scroll to column
+                function scrollToCol(index) {{
+                    const metrics = getMetrics();
+                    if (!metrics) return;
+                    const targetScroll = index * metrics.pageWidth;
+                    const maxScroll = metrics.container.scrollWidth - metrics.clientWidth;
+                    const clampedScroll = Math.max(0, Math.min(maxScroll, targetScroll));
+                    metrics.container.scrollLeft = clampedScroll;
+                    console.log('→ Column ' + index + ' (scroll: ' + clampedScroll.toFixed(0) + 'px)');
+                }}
+                
+                // Store current position before layout change
+                const wasMultiColumn = !window.isSingleColumnMode;
+                const currentCol = wasMultiColumn ? getCurrentCol() : 0;
+                
+                // UPDATE GLOBAL SETTINGS
+                window.currentColumnWidth = {self.column_width_px};
+                window.currentGap = {gap_val};
+                window.currentPadding = {{
+                    top: {mt},
+                    right: {mr},
+                    bottom: {mb},
+                    left: {ml}
+                }};
+                
+                console.log('✓ Updated globals: colWidth=' + window.currentColumnWidth + 'px, gap=' + window.currentGap + 'px');
+                
                 // Calculate if we can fit multiple columns
                 const clientWidth = container.clientWidth || window.innerWidth;
                 const availableWidth = clientWidth - {ml} - {mr};
@@ -2433,7 +2494,6 @@ class EPubViewer(Adw.ApplicationWindow):
                         box-sizing: border-box;
                         position: relative;
                     `;
-                    window.currentColumnWidth = null;
                     window.isSingleColumnMode = true;
                 }} else {{
                     // MULTI-COLUMN MODE: Use column layout with horizontal scroll
@@ -2453,13 +2513,16 @@ class EPubViewer(Adw.ApplicationWindow):
                         box-sizing: border-box;
                         position: relative;
                     `;
-                    window.currentColumnWidth = {self.column_width_px};
                     window.isSingleColumnMode = false;
                     
-                    // Trigger resize to recalculate and snap
+                    // Snap to column position after layout change
                     setTimeout(() => {{
-                        console.log('🔄 Triggering resize for column snapping');
-                        window.dispatchEvent(new Event('resize'));
+                        const metrics = getMetrics();
+                        if (metrics && metrics.colCount > 1) {{
+                            const targetCol = Math.min(currentCol, metrics.colCount - 1);
+                            console.log('🔄 Snapping to column ' + targetCol + ' after CSS update');
+                            scrollToCol(targetCol);
+                        }}
                     }}, 50);
                 }}
                 
@@ -2475,7 +2538,8 @@ class EPubViewer(Adw.ApplicationWindow):
             try:
                 self.webview.run_javascript(js, None, None, None)
             except Exception:
-                pass    
+                pass
+
 
     def set_column_width(self, w):
         """Set column width in pixels (from menu action).
@@ -2896,12 +2960,7 @@ class EPubViewer(Adw.ApplicationWindow):
         self.connect("notify::default-width", self._on_window_size_changed)
 
     def _on_sidebar_toggle(self, btn):
-        """Toggle sidebar visibility.
-        
-        The browser automatically fires a resize event when the sidebar animates,
-        and the JavaScript resize handler maintains the current column position.
-        No need to call display_page().
-        """
+        """Toggle sidebar visibility and snap to current column."""
         try:
             new = not self.split.get_show_sidebar()
             self.split.set_show_sidebar(new)
@@ -2911,13 +2970,44 @@ class EPubViewer(Adw.ApplicationWindow):
             else:
                 self._user_hid_sidebar = False
             
-            # Browser resize event will automatically fire and maintain column position
-            # The JavaScript resize handler (with 400ms delay) handles everything
-            print(f"🔄 Sidebar toggled - letting resize handler maintain position")
+            # Trigger column snapping after sidebar animation
+            if self.book and self.items and self.webview:
+                GLib.timeout_add(450, self._snap_to_current_column)
             
         except Exception as e:
             print(f"Sidebar toggle error: {e}")
 
+    def _snap_to_current_column(self):
+        """Snap to current column position (called after resize/sidebar toggle)."""
+        if not getattr(self, "webview", None):
+            return False
+        
+        js = """
+        (function(){
+            try {
+                if (!window.isSingleColumnMode) {
+                    const metrics = getContainerMetrics();
+                    if (metrics && metrics.colCount > 1) {
+                        const currentCol = getCurrentColumnIndex();
+                        console.log('🔄 Snapping to column ' + currentCol);
+                        scrollToColumnIndex(currentCol, false);
+                    }
+                }
+            } catch(e) {
+                console.log('❌ Snap error:', e);
+            }
+        })();
+        """
+        
+        try:
+            self.webview.evaluate_javascript(js, -1, None, None, None, None, None)
+        except Exception:
+            try:
+                self.webview.run_javascript(js, None, None, None)
+            except Exception:
+                pass
+        
+        return False
     def _on_window_size_changed(self, *args):
         """Handle responsive layout changes.
         
@@ -3350,373 +3440,405 @@ class EPubViewer(Adw.ApplicationWindow):
         
         # ENHANCED COLUMN NAVIGATION JAVASCRIPT WITH DYNAMIC COLUMN DETECTION
         js_detect_columns = f"""<script>
-    (function() {{
-        const originalLog = console.log;
-        console.log = function(...args) {{
-            const msg = args.map(a => String(a)).join(' ');
-            if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.consoleLog) {{
-                window.webkit.messageHandlers.consoleLog.postMessage(msg);
-            }}
-            originalLog.apply(console, args);
-        }};
-        
-        console.log('=== COLUMN SCRIPT LOADED ===');
-        console.log('Column width: {self.column_width_px}px');
-        
-        window.currentColumnWidth = {self.column_width_px};
-        
-        function getContainerMetrics() {{
-            const container = document.querySelector('.ebook-content');
-            if (!container) return null;
-            
-            const style = getComputedStyle(container);
-            const paddingLeft = parseFloat(style.paddingLeft) || 0;
-            const paddingRight = parseFloat(style.paddingRight) || 0;
-            const gap = parseFloat(style.columnGap) || 0;
-            
-            const clientWidth = container.clientWidth;
-            const clientHeight = container.clientHeight;
-            const availableWidth = clientWidth - paddingLeft - paddingRight;
-            
-            // Calculate actual column count based on column-width
-            const colWidth = parseFloat(style.columnWidth) || window.currentColumnWidth || 300;
-            let actualColCount = Math.max(1, Math.floor((availableWidth + gap) / (colWidth + gap)));
-            
-            const totalGap = gap * (actualColCount - 1);
-            const columnWidth = (availableWidth - totalGap) / actualColCount;
-            
-            return {{
-                container: container,
-                clientWidth: clientWidth,
-                availableWidth: availableWidth,
-                paddingLeft: paddingLeft,
-                paddingRight: paddingRight,
-                gap: gap,
-                colCount: actualColCount,  // This is now the ACTUAL rendered count
-                columnWidth: columnWidth,
-                pageWidth: columnWidth + gap  // Width to scroll per column
-            }};
-        }}
-        
-        function getCurrentColumnIndex() {{
-            const metrics = getContainerMetrics();
-            if (!metrics || metrics.colCount <= 1) return 0;
-            
-            const scrollLeft = metrics.container.scrollLeft;
-            const columnIndex = Math.round(scrollLeft / metrics.pageWidth);
-            return columnIndex;
-        }}
-        
-        function scrollToColumnIndex(index, smooth = true) {{
-            const metrics = getContainerMetrics();
-            if (!metrics) return;
-            
-            const targetScroll = index * metrics.pageWidth;
-            const maxScroll = metrics.container.scrollWidth - metrics.clientWidth;
-            const clampedScroll = Math.max(0, Math.min(maxScroll, targetScroll));
-            
-            if (smooth) {{
-                smoothScrollTo(clampedScroll, metrics.container.scrollTop);
-            }} else {{
-                metrics.container.scrollLeft = clampedScroll;
-            }}
-            
-            console.log('→ Column ' + index + ' (scroll: ' + clampedScroll.toFixed(0) + 'px)');
-        }}
-        
-        function smoothScrollTo(xTarget, yTarget) {{
-            const container = document.querySelector('.ebook-content');
-            if (!container) return;
-            
-            const startX = container.scrollLeft;
-            const startY = container.scrollTop;
-            const distX = xTarget - startX;
-            const distY = yTarget - startY;
-            
-            // Skip animation if distance is tiny
-            if (Math.abs(distX) < 1 && Math.abs(distY) < 1) {{
-                container.scrollLeft = xTarget;
-                container.scrollTop = yTarget;
-                return;
-            }}
-            
-            const duration = 350;
-            const start = performance.now();
-            
-            function step(time) {{
-                const t = Math.min((time - start) / duration, 1);
-                const ease = t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
-                container.scrollLeft = startX + distX * ease;
-                container.scrollTop = startY + distY * ease;
-                if (t < 1) requestAnimationFrame(step);
-            }}
-            requestAnimationFrame(step);
-        }}
-        
-        function snapScroll() {{
-            const metrics = getContainerMetrics();
-            if (!metrics || metrics.colCount <= 1) return;
-            
-            const currentScroll = metrics.container.scrollLeft;
-            const columnIndex = Math.round(currentScroll / metrics.pageWidth);
-            const targetScroll = columnIndex * metrics.pageWidth;
-            
-            if (Math.abs(targetScroll - currentScroll) > 2) {{
-                console.log('↹ Snap to col ' + columnIndex + ' (' + currentScroll.toFixed(0) + '→' + targetScroll.toFixed(0) + ')');
-                metrics.container.scrollLeft = targetScroll;
-            }}
-        }}
-        
-        // Scroll event listener
-        const container = document.querySelector('.ebook-content');
-        if (container) {{
-            let scrollTimer;
-            container.addEventListener('scroll', function() {{
-                clearTimeout(scrollTimer);
-                scrollTimer = setTimeout(() => {{
-                    const metrics = getContainerMetrics();
-                    if (metrics && metrics.colCount > 1) snapScroll();
-                }}, 150);
-            }});
-        }}
-        
-        // Mouse wheel navigation
-        window.addEventListener('wheel', function(e) {{
-            // In single-column mode, allow natural scrolling
-            if (window.isSingleColumnMode) return;
-            
-            const metrics = getContainerMetrics();
-            if (!metrics) return;
-            
-            // Multi-column mode: navigate by columns
-            e.preventDefault();
-            
-            const currentCol = getCurrentColumnIndex();
-            const direction = e.deltaY > 0 ? 1 : -1;
-            const targetCol = currentCol + direction;
-            
-            const maxScroll = metrics.container.scrollWidth - metrics.clientWidth;
-            const maxCol = Math.floor(maxScroll / metrics.pageWidth);
-            
-            if (targetCol >= 0 && targetCol <= maxCol) {{
-                console.log('🖱️ ' + (direction>0?'→':'←') + ' col ' + currentCol + '→' + targetCol + ' (of ' + maxCol + ')');
-                scrollToColumnIndex(targetCol, true);
-            }}
-        }}, {{passive: false, capture: true}});
-        
-        // Keyboard navigation
-        document.addEventListener('keydown', function(e) {{
-            if (e.ctrlKey || e.metaKey || e.altKey) return;
-            
-            const container = document.querySelector('.ebook-content');
-            if (!container) return;
-            
-            const metrics = getContainerMetrics();
-            if (!metrics) return;
-            
-            if (window.isSingleColumnMode) {{
-                // Single column: Vertical scrolling only (standard browser behavior)
-                const viewH = container.clientHeight;
-                const maxY = container.scrollHeight - viewH;
-                let y = container.scrollTop;
-                let scroll = false;
-                
-                switch(e.key) {{
-                    case 'ArrowUp': 
-                        e.preventDefault(); 
-                        y = Math.max(0, y - viewH*0.8); 
-                        scroll = true; 
-                        break;
-                    case 'ArrowDown': 
-                        e.preventDefault(); 
-                        y = Math.min(maxY, y + viewH*0.8); 
-                        scroll = true; 
-                        break;
-                    case 'PageUp': 
-                        e.preventDefault(); 
-                        y = Math.max(0, y - viewH); 
-                        scroll = true; 
-                        break;
-                    case 'PageDown': 
-                        e.preventDefault(); 
-                        y = Math.min(maxY, y + viewH); 
-                        scroll = true; 
-                        break;
-                    case 'Home': 
-                        e.preventDefault(); 
-                        y = 0; 
-                        scroll = true; 
-                        break;
-                    case 'End': 
-                        e.preventDefault(); 
-                        y = maxY; 
-                        scroll = true; 
-                        break;
-                }}
-                
-                if (scroll) {{
-                    console.log('⬆️⬇️ ' + e.key + ' (1-col mode)');
-                    smoothScrollTo(0, y);
-                }}
-            }} else {{
-                // Multi-column: horizontal navigation
-                const currentCol = getCurrentColumnIndex();
-                const maxScroll = metrics.container.scrollWidth - metrics.clientWidth;
-                const maxCol = Math.floor(maxScroll / metrics.pageWidth);
-                let targetCol = currentCol;
-                let scroll = false;
-                
-                switch(e.key) {{
-                    case 'ArrowLeft': 
-                        e.preventDefault(); 
-                        targetCol = Math.max(0, currentCol - 1); 
-                        scroll = true; 
-                        break;
-                    case 'ArrowRight': 
-                        e.preventDefault(); 
-                        targetCol = Math.min(maxCol, currentCol + 1); 
-                        scroll = true; 
-                        break;
-                    case 'PageUp': 
-                        e.preventDefault(); 
-                        targetCol = Math.max(0, currentCol - metrics.colCount); 
-                        scroll = true; 
-                        break;
-                    case 'PageDown': 
-                        e.preventDefault(); 
-                        targetCol = Math.min(maxCol, currentCol + metrics.colCount); 
-                        scroll = true; 
-                        break;
-                    case 'Home': 
-                        e.preventDefault(); 
-                        targetCol = 0; 
-                        scroll = true; 
-                        break;
-                    case 'End': 
-                        e.preventDefault(); 
-                        targetCol = maxCol; 
-                        scroll = true; 
-                        break;
-                }}
-                
-                if (scroll) {{
-                    console.log('⬅️➡️ ' + e.key + ' col ' + currentCol + '→' + targetCol + ' (of ' + maxCol + ')');
-                    scrollToColumnIndex(targetCol, true);
-                }}
-            }}
-        }}, {{passive: false, capture: true}});
-        
-        // Window resize handler - maintain column position
-        let resizeTimer;
-        window.addEventListener('resize', function() {{
-            clearTimeout(resizeTimer);
-            resizeTimer = setTimeout(function() {{
-                checkAndApplyLayout();
-            }}, 400);  // Wait for sidebar animation
-        }});
-        
-        // Function to check layout and apply single-column or multi-column mode
-        function checkAndApplyLayout() {{
-            const container = document.querySelector('.ebook-content');
-            if (!container) return;
-            
-            const style = getComputedStyle(container);
-            const paddingLeft = parseFloat(style.paddingLeft) || 0;
-            const paddingRight = parseFloat(style.paddingRight) || 0;
-            const clientWidth = container.clientWidth;
-            const availableWidth = clientWidth - paddingLeft - paddingRight;
-            const colWidth = window.currentColumnWidth || {self.column_width_px};
-            const gap = {getattr(self, "_column_gap", 32)};
-            
-            // Calculate how many columns would fit
-            const wouldFitCols = Math.max(1, Math.floor((availableWidth + gap) / (colWidth + gap)));
-            
-            console.log('🔍 Layout check: ' + wouldFitCols + ' cols would fit (availW=' + availableWidth + 'px, colW=' + colWidth + 'px)');
-            
-            if (wouldFitCols === 1 && !window.isSingleColumnMode) {{
-                // Switch to single-column mode
-                console.log('📖 Switching to single-column vertical scroll mode');
-                container.style.cssText = `
-                    column-width: unset;
-                    -webkit-column-width: unset;
-                    column-count: unset;
-                    -webkit-column-count: unset;
-                    column-gap: unset;
-                    -webkit-column-gap: unset;
-                    column-fill: unset;
-                    -webkit-column-fill: unset;
-                    padding: {getattr(self, "page_margin_top", 12)}px {getattr(self, "page_margin_right", 12)}px {getattr(self, "page_margin_bottom", 12)}px {getattr(self, "page_margin_left", 12)}px;
-                    width: 100%;
-                    height: 100vh;
-                    overflow-x: hidden;
-                    overflow-y: auto;
-                    box-sizing: border-box;
-                    position: relative;
-                `;
-                window.isSingleColumnMode = true;
-            }} else if (wouldFitCols > 1 && window.isSingleColumnMode !== false) {{
-                // Switch to multi-column mode
-                console.log('📰 Switching to multi-column mode (' + wouldFitCols + ' cols)');
-                container.style.cssText = `
-                    column-width: {self.column_width_px}px;
-                    -webkit-column-width: {self.column_width_px}px;
-                    column-gap: {getattr(self, "_column_gap", 32)}px;
-                    -webkit-column-gap: {getattr(self, "_column_gap", 32)}px;
-                    column-fill: auto;
-                    -webkit-column-fill: auto;
-                    padding: {getattr(self, "page_margin_top", 12)}px {getattr(self, "page_margin_right", 12)}px {getattr(self, "page_margin_bottom", 12)}px {getattr(self, "page_margin_left", 12)}px;
-                    width: 100vw;
-                    height: 100vh;
-                    overflow-x: auto;
-                    overflow-y: hidden;
-                    box-sizing: border-box;
-                    position: relative;
-                `;
-                window.isSingleColumnMode = false;
-                
-                // Snap to column after switching to multi-column
-                setTimeout(() => {{
-                    const metrics = getContainerMetrics();
-                    if (metrics && metrics.colCount > 1) {{
-                        const currentCol = getCurrentColumnIndex();
-                        console.log('🔄 Resize - staying at column ' + currentCol);
-                        scrollToColumnIndex(currentCol, false);
+            (function() {{
+                const originalLog = console.log;
+                console.log = function(...args) {{
+                    const msg = args.map(a => String(a)).join(' ');
+                    if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.consoleLog) {{
+                        window.webkit.messageHandlers.consoleLog.postMessage(msg);
                     }}
-                }}, 50);
-            }}
-        }}
-        
-        // Initial layout check on page load
-        setTimeout(() => {{
-            checkAndApplyLayout();
-        }}, 100);
-        
-        // Initial metrics logging
-        setTimeout(() => {{
-            const m = getContainerMetrics();
-            if (m) {{
-                console.log('📏 Metrics:');
-                console.log('  Column width: ' + window.currentColumnWidth + 'px');
-                console.log('  Actual cols in viewport: ' + m.colCount);
-                console.log('  Single-column mode: ' + (window.isSingleColumnMode ? 'YES' : 'NO'));
-                console.log('  clientW: ' + m.clientWidth + 'px');
-                console.log('  availableW: ' + m.availableWidth + 'px (padding: ' + m.paddingLeft + '/' + m.paddingRight + ')');
-                console.log('  gap: ' + m.gap + 'px');
-                console.log('  columnW: ' + m.columnWidth.toFixed(1) + 'px');
-                console.log('  pageW: ' + m.pageWidth.toFixed(1) + 'px');
-                console.log('  scrollW: ' + m.container.scrollWidth + 'px');
-                console.log('  scrollH: ' + m.container.scrollHeight + 'px');
-                console.log('  maxScroll: ' + (m.container.scrollWidth - m.clientWidth) + 'px');
+                    originalLog.apply(console, args);
+                }};
                 
-                if (m.colCount > 1 && !window.isSingleColumnMode) {{
-                    snapScroll();
+                console.log('=== COLUMN SCRIPT LOADED ===');
+                console.log('Column width: {self.column_width_px}px');
+                
+                window.currentColumnWidth = {self.column_width_px};
+                window.currentGap = {getattr(self, "_column_gap", 32)};
+                window.currentPadding = {{
+                    top: {getattr(self, "page_margin_top", 12)},
+                    right: {getattr(self, "page_margin_right", 12)},
+                    bottom: {getattr(self, "page_margin_bottom", 12)},
+                    left: {getattr(self, "page_margin_left", 12)}
+                }};
+                
+                function getContainerMetrics() {{
+                    const container = document.querySelector('.ebook-content');
+                    if (!container) return null;
+                    
+                    const style = getComputedStyle(container);
+                    const paddingLeft = parseFloat(style.paddingLeft) || 0;
+                    const paddingRight = parseFloat(style.paddingRight) || 0;
+                    const gap = parseFloat(style.columnGap) || 0;
+                    
+                    const clientWidth = container.clientWidth;
+                    const clientHeight = container.clientHeight;
+                    const scrollWidth = container.scrollWidth;
+                    const availableWidth = clientWidth - paddingLeft - paddingRight;
+                    
+                    // Calculate actual column count based on column-width
+                    const colWidth = parseFloat(style.columnWidth) || window.currentColumnWidth || 300;
+                    let viewportColCount = Math.max(1, Math.floor((availableWidth + gap) / (colWidth + gap)));
+                    
+                    const totalGap = gap * (viewportColCount - 1);
+                    const columnWidth = (availableWidth - totalGap) / viewportColCount;
+                    const pageWidth = columnWidth + gap;
+                    
+                    // Calculate TOTAL columns in the entire document
+                    const totalColumns = Math.max(1, Math.round(scrollWidth / pageWidth));
+                    
+                    // Maximum column index we can navigate to
+                    const maxCol = totalColumns - 1;
+                    
+                    return {{
+                        container: container,
+                        clientWidth: clientWidth,
+                        availableWidth: availableWidth,
+                        paddingLeft: paddingLeft,
+                        paddingRight: paddingRight,
+                        gap: gap,
+                        colCount: viewportColCount,  // Columns visible at once
+                        totalCols: totalColumns,      // Total columns in document
+                        maxCol: maxCol,               // Max column index (0-based)
+                        columnWidth: columnWidth,
+                        pageWidth: pageWidth
+                    }};
                 }}
-            }}
-        }}, 200);
-        
-        console.log('=== SCRIPT READY ===');
-    }})();
-    </script>"""
+                
+                function getCurrentColumnIndex() {{
+                    const metrics = getContainerMetrics();
+                    if (!metrics || metrics.colCount <= 1) return 0;
+                    
+                    const scrollLeft = metrics.container.scrollLeft;
+                    const columnIndex = Math.round(scrollLeft / metrics.pageWidth);
+                    return Math.min(columnIndex, metrics.maxCol);
+                }}
+                
+                function scrollToColumnIndex(index, smooth = true) {{
+                    const metrics = getContainerMetrics();
+                    if (!metrics) return;
+                    
+                    // Clamp to valid range
+                    const targetCol = Math.max(0, Math.min(index, metrics.maxCol));
+                    const targetScroll = targetCol * metrics.pageWidth;
+                    
+                    if (smooth) {{
+                        smoothScrollTo(targetScroll, metrics.container.scrollTop);
+                    }} else {{
+                        metrics.container.scrollLeft = targetScroll;
+                    }}
+                    
+                    console.log('→ Column ' + targetCol + ' (scroll: ' + targetScroll.toFixed(0) + 'px, max: ' + metrics.maxCol + ')');
+                }}
+                
+                function smoothScrollTo(xTarget, yTarget) {{
+                    const container = document.querySelector('.ebook-content');
+                    if (!container) return;
+                    
+                    const startX = container.scrollLeft;
+                    const startY = container.scrollTop;
+                    const distX = xTarget - startX;
+                    const distY = yTarget - startY;
+                    
+                    // Skip animation if distance is tiny
+                    if (Math.abs(distX) < 1 && Math.abs(distY) < 1) {{
+                        container.scrollLeft = xTarget;
+                        container.scrollTop = yTarget;
+                        return;
+                    }}
+                    
+                    const duration = 350;
+                    const start = performance.now();
+                    
+                    function step(time) {{
+                        const t = Math.min((time - start) / duration, 1);
+                        const ease = t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
+                        container.scrollLeft = startX + distX * ease;
+                        container.scrollTop = startY + distY * ease;
+                        if (t < 1) requestAnimationFrame(step);
+                    }}
+                    requestAnimationFrame(step);
+                }}
+                
+                function snapScroll() {{
+                    const metrics = getContainerMetrics();
+                    if (!metrics || metrics.colCount <= 1) return;
+                    
+                    const currentScroll = metrics.container.scrollLeft;
+                    const columnIndex = Math.round(currentScroll / metrics.pageWidth);
+                    const clampedIndex = Math.max(0, Math.min(columnIndex, metrics.maxCol));
+                    const targetScroll = clampedIndex * metrics.pageWidth;
+                    
+                    if (Math.abs(targetScroll - currentScroll) > 2) {{
+                        console.log('↹ Snap to col ' + clampedIndex + ' (' + currentScroll.toFixed(0) + '→' + targetScroll.toFixed(0) + ')');
+                        metrics.container.scrollLeft = targetScroll;
+                    }}
+                }}
+                
+                // Scroll event listener
+                const container = document.querySelector('.ebook-content');
+                if (container) {{
+                    let scrollTimer;
+                    container.addEventListener('scroll', function() {{
+                        clearTimeout(scrollTimer);
+                        scrollTimer = setTimeout(() => {{
+                            const metrics = getContainerMetrics();
+                            if (metrics && metrics.colCount > 1) snapScroll();
+                        }}, 150);
+                    }});
+                }}
+                
+                // Mouse wheel navigation
+                window.addEventListener('wheel', function(e) {{
+                    // In single-column mode, allow natural scrolling
+                    if (window.isSingleColumnMode) return;
+                    
+                    const metrics = getContainerMetrics();
+                    if (!metrics) return;
+                    
+                    // Multi-column mode: navigate by columns
+                    e.preventDefault();
+                    
+                    const currentCol = getCurrentColumnIndex();
+                    const direction = e.deltaY > 0 ? 1 : -1;
+                    const targetCol = Math.max(0, Math.min(metrics.maxCol, currentCol + direction));
+                    
+                    if (targetCol !== currentCol) {{
+                        console.log('🖱️ ' + (direction>0?'→':'←') + ' col ' + currentCol + '→' + targetCol + ' (of ' + metrics.maxCol + ')');
+                        scrollToColumnIndex(targetCol, true);
+                    }}
+                }}, {{passive: false, capture: true}});
+                
+                // Keyboard navigation
+                document.addEventListener('keydown', function(e) {{
+                    if (e.ctrlKey || e.metaKey || e.altKey) return;
+                    
+                    const container = document.querySelector('.ebook-content');
+                    if (!container) return;
+                    
+                    const metrics = getContainerMetrics();
+                    if (!metrics) return;
+                    
+                    if (window.isSingleColumnMode) {{
+                        // Single column: Vertical scrolling only (standard browser behavior)
+                        const viewH = container.clientHeight;
+                        const maxY = container.scrollHeight - viewH;
+                        let y = container.scrollTop;
+                        let scroll = false;
+                        
+                        switch(e.key) {{
+                            case 'ArrowUp': 
+                                e.preventDefault(); 
+                                y = Math.max(0, y - 40); 
+                                scroll = true; 
+                                break;
+                            case 'ArrowDown': 
+                                e.preventDefault(); 
+                                y = Math.min(maxY, y + 40); 
+                                scroll = true; 
+                                break;
+                            case 'PageUp': 
+                                e.preventDefault(); 
+                                y = Math.max(0, y - viewH * 0.9); 
+                                scroll = true; 
+                                break;
+                            case 'PageDown': 
+                            case ' ': 
+                                e.preventDefault(); 
+                                y = Math.min(maxY, y + viewH * 0.9); 
+                                scroll = true; 
+                                break;
+                            case 'Home': 
+                                e.preventDefault(); 
+                                y = 0; 
+                                scroll = true; 
+                                break;
+                            case 'End': 
+                                e.preventDefault(); 
+                                y = maxY; 
+                                scroll = true; 
+                                break;
+                        }}
+                        
+                        if (scroll) {{
+                            console.log('⬆️⬇️ ' + e.key + ' (1-col mode)');
+                            smoothScrollTo(0, y);
+                        }}
+                    }} else {{
+                        // Multi-column: horizontal navigation
+                        const currentCol = getCurrentColumnIndex();
+                        const maxCol = metrics.maxCol;
+                        let targetCol = currentCol;
+                        let scroll = false;
+                        
+                        switch(e.key) {{
+                            case 'ArrowLeft': 
+                                e.preventDefault(); 
+                                targetCol = Math.max(0, currentCol - 1); 
+                                scroll = true; 
+                                break;
+                            case 'ArrowRight': 
+                                e.preventDefault(); 
+                                targetCol = Math.min(maxCol, currentCol + 1); 
+                                scroll = true; 
+                                break;
+                            case 'PageUp': 
+                                e.preventDefault(); 
+                                targetCol = Math.max(0, currentCol - metrics.colCount); 
+                                scroll = true; 
+                                break;
+                            case 'PageDown': 
+                                e.preventDefault(); 
+                                targetCol = Math.min(maxCol, currentCol + metrics.colCount); 
+                                scroll = true; 
+                                break;
+                            case 'Home': 
+                                e.preventDefault(); 
+                                targetCol = 0; 
+                                scroll = true; 
+                                break;
+                            case 'End': 
+                                e.preventDefault(); 
+                                targetCol = maxCol; 
+                                scroll = true; 
+                                break;
+                        }}
+                        
+                        if (scroll) {{
+                            console.log('⬅️➡️ ' + e.key + ' col ' + currentCol + '→' + targetCol + ' (of ' + maxCol + ')');
+                            scrollToColumnIndex(targetCol, true);
+                        }}
+                    }}
+                }}, {{passive: false, capture: true}});
+                
+                // Window resize handler - maintain column position
+                let resizeTimer;
+                window.addEventListener('resize', function() {{
+                    clearTimeout(resizeTimer);
+                    resizeTimer = setTimeout(function() {{
+                        checkAndApplyLayout();
+                    }}, 400);  // Wait for sidebar animation
+                }});
+                
+                // Function to check layout and apply single-column or multi-column mode
+                function checkAndApplyLayout() {{
+                    const container = document.querySelector('.ebook-content');
+                    if (!container) return;
+                    
+                    // Store current position BEFORE any changes
+                    const wasMultiColumn = !window.isSingleColumnMode;
+                    const currentCol = wasMultiColumn ? getCurrentColumnIndex() : 0;
+                    
+                    // USE CURRENT DYNAMIC VALUES - This is the key fix!
+                    const colWidth = window.currentColumnWidth || 300;
+                    const gap = window.currentGap || 32;
+                    const padding = window.currentPadding || {{
+                        top: 12,
+                        right: 12,
+                        bottom: 12,
+                        left: 12
+                    }};
+                    
+                    const style = getComputedStyle(container);
+                    const paddingLeft = parseFloat(style.paddingLeft) || padding.left;
+                    const paddingRight = parseFloat(style.paddingRight) || padding.right;
+                    const clientWidth = container.clientWidth;
+                    const availableWidth = clientWidth - paddingLeft - paddingRight;
+                    
+                    // Calculate how many columns would fit
+                    const wouldFitCols = Math.max(1, Math.floor((availableWidth + gap) / (colWidth + gap)));
+                    
+                    console.log('🔍 Layout check: ' + wouldFitCols + ' cols would fit (availW=' + availableWidth + 'px, colW=' + colWidth + 'px)');
+                    
+                    if (wouldFitCols === 1 && !window.isSingleColumnMode) {{
+                        // Switch to single-column mode
+                        console.log('📖 Switching to single-column vertical scroll mode');
+                        container.style.cssText = `
+                            column-width: unset;
+                            -webkit-column-width: unset;
+                            column-count: unset;
+                            -webkit-column-count: unset;
+                            column-gap: unset;
+                            -webkit-column-gap: unset;
+                            column-fill: unset;
+                            -webkit-column-fill: unset;
+                            padding: ${{padding.top}}px ${{padding.right}}px ${{padding.bottom}}px ${{padding.left}}px;
+                            width: 100%;
+                            height: 100vh;
+                            overflow-x: hidden;
+                            overflow-y: auto;
+                            box-sizing: border-box;
+                            position: relative;
+                        `;
+                        window.isSingleColumnMode = true;
+                    }} else if (wouldFitCols > 1) {{
+                        const needsLayoutUpdate = window.isSingleColumnMode !== false;
+                        
+                        if (needsLayoutUpdate) {{
+                            // Switch to multi-column mode
+                            console.log('📰 Switching to multi-column mode (' + wouldFitCols + ' cols)');
+                            container.style.cssText = `
+                                column-width: ${{colWidth}}px;
+                                -webkit-column-width: ${{colWidth}}px;
+                                column-gap: ${{gap}}px;
+                                -webkit-column-gap: ${{gap}}px;
+                                column-fill: auto;
+                                -webkit-column-fill: auto;
+                                padding: ${{padding.top}}px ${{padding.right}}px ${{padding.bottom}}px ${{padding.left}}px;
+                                width: 100vw;
+                                height: 100vh;
+                                overflow-x: auto;
+                                overflow-y: hidden;
+                                box-sizing: border-box;
+                                position: relative;
+                            `;
+                            window.isSingleColumnMode = false;
+                        }}
+                        
+                        // Snap to column - whether switching or just resizing
+                        setTimeout(() => {{
+                            const metrics = getContainerMetrics();
+                            if (metrics && metrics.colCount > 1) {{
+                                const targetCol = Math.min(currentCol, metrics.maxCol);
+                                console.log('🔄 Resize - snapping to column ' + targetCol + ' (max: ' + metrics.maxCol + ')');
+                                scrollToColumnIndex(targetCol, false);
+                            }}
+                        }}, 50);
+                    }}
+                }}
+                
+                // Initial layout check on page load
+                setTimeout(() => {{
+                    checkAndApplyLayout();
+                }}, 100);
+                
+                // Initial metrics logging
+                setTimeout(() => {{
+                    const m = getContainerMetrics();
+                    if (m) {{
+                        console.log('📏 Metrics:');
+                        console.log('  Column width: ' + window.currentColumnWidth + 'px');
+                        console.log('  Viewport cols: ' + m.colCount);
+                        console.log('  Total cols: ' + m.totalCols);
+                        console.log('  Max col index: ' + m.maxCol);
+                        console.log('  Single-column mode: ' + (window.isSingleColumnMode ? 'YES' : 'NO'));
+                        console.log('  clientW: ' + m.clientWidth + 'px');
+                        console.log('  availableW: ' + m.availableWidth + 'px (padding: ' + m.paddingLeft + '/' + m.paddingRight + ')');
+                        console.log('  gap: ' + m.gap + 'px');
+                        console.log('  columnW: ' + m.columnWidth.toFixed(1) + 'px');
+                        console.log('  pageW: ' + m.pageWidth.toFixed(1) + 'px');
+                        console.log('  scrollW: ' + m.container.scrollWidth + 'px');
+                        console.log('  scrollH: ' + m.container.scrollHeight + 'px');
+                        
+                        if (m.colCount > 1 && !window.isSingleColumnMode) {{
+                            snapScroll();
+                        }}
+                    }}
+                }}, 200);
+                
+                console.log('=== SCRIPT READY ===');
+            }})();
+            </script>"""
 
         link_intercept_script = """
         <script>
