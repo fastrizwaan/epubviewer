@@ -1,0 +1,2 @@
+[JS] ❌ Snap error: ReferenceError: Can't find variable: getContainerMetrics
+

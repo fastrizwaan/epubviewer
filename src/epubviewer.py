@@ -18,22 +18,6 @@ import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup, NavigableString, Tag, ProcessingInstruction, element, Comment
 
-# --- Optional TTS Dependencies ---
-TTS_AVAILABLE = False
-Kokoro = None
-Gst = None
-try:
-    from kokoro_onnx import Kokoro as _Kokoro
-    import gi as _gi2
-    _gi2.require_version('Gst', '1.0')
-    from gi.repository import Gst as _Gst
-    TTS_AVAILABLE = True
-    Kokoro = _Kokoro
-    Gst = _Gst
-except ImportError as e:
-    print(f"TTS dependencies not found: {e}. TTS features will be disabled.")
-    # TTS features will be handled gracefully later if not available.
-
 APP_NAME = "EPUB Viewer"
 os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
 
@@ -255,14 +239,20 @@ def highlight_markup(text: str, query: str) -> str:
 # -------------------------
 class TTSEngine:
     def __init__(self, webview_getter, base_temp_dir=None, kokoro_model_path=None, voices_bin_path=None):
+        import tempfile, threading, time, os, re
+        from gi.repository import GLib
+
         self.webview_getter = webview_getter
         self.base_temp_dir = base_temp_dir or tempfile.gettempdir()
         self.kokoro = None
+        self.player = None
+        self.playback_finished = True
         self.is_playing_flag = False
         self.should_stop = False
         self.current_thread = None
-
-        # Playback / navigation state
+        self.paused = False
+        self._resume_event = threading.Event()
+        self._resume_event.set()
         self._tts_sentences = []
         self._tts_sids = []
         self._tts_voice = None
@@ -270,29 +260,52 @@ class TTSEngine:
         self._tts_lang = "en-us"
         self._tts_finished_callback = None
         self._tts_highlight_callback = None
-
-        # index and audio cache
         self._current_play_index = 0
         self._audio_files = {}
         self._audio_lock = threading.Lock()
         self._synthesis_done = threading.Event()
-
-        # delayed on-demand synth timer
         self._delayed_timer = None
         self._delayed_timer_lock = threading.Lock()
 
-        # paused state
-        self.paused = False
-        self._resume_event = threading.Event()
-        self._resume_event.set()
+        # --------------------------------------------------
+        # Optional TTS Dependencies
+        # --------------------------------------------------
+        self.TTS_AVAILABLE = False
+        self.Kokoro = None
+        self.Gst = None
 
-        # init kokoro if available
-        if TTS_AVAILABLE and Kokoro:
+        # Try to import Kokoro (optional)
+        try:
+            from kokoro_onnx import Kokoro as _Kokoro
+            self.Kokoro = _Kokoro
+            self.TTS_AVAILABLE = True
+        except ImportError as e:
+            print(f"[warn] Kokoro unavailable: {e}")
+
+        # Try to import GStreamer (optional)
+        try:
+            import gi
+            gi.require_version("Gst", "1.0")
+            from gi.repository import Gst
+            self.Gst = Gst
+            Gst.init(None)
+            self.TTS_AVAILABLE = True
+        except Exception as e:
+            print(f"[warn] GStreamer unavailable: {e}")
+
+        # --------------------------------------------------
+        # Initialize Kokoro if available
+        # --------------------------------------------------
+        if self.Kokoro:
             try:
-                model_path = os.environ.get("KOKORO_ONNX_PATH", "/app/share/kokoro-models/kokoro-v1.0.onnx")
-                voices_path = os.environ.get("KOKORO_VOICES_PATH", "/app/share/kokoro-models/voices-v1.0.bin")
+                model_path = kokoro_model_path or os.environ.get(
+                    "KOKORO_ONNX_PATH", "/app/share/kokoro-models/kokoro-v1.0.onnx"
+                )
+                voices_path = voices_bin_path or os.environ.get(
+                    "KOKORO_VOICES_PATH", "/app/share/kokoro-models/voices-v1.0.bin"
+                )
                 if os.path.exists(model_path) and os.path.exists(voices_path):
-                    self.kokoro = Kokoro(model_path, voices_path)
+                    self.kokoro = self.Kokoro(model_path, voices_path)
                     print("[info] Kokoro TTS initialized")
                 else:
                     print(f"[warn] Kokoro models not found at {model_path}")
@@ -300,22 +313,22 @@ class TTSEngine:
                 print(f"[error] Failed to initialize Kokoro: {e}")
                 self.kokoro = None
 
+        # --------------------------------------------------
         # Initialize GStreamer if available
+        # --------------------------------------------------
         try:
-            if TTS_AVAILABLE and Gst:
-                Gst.init(None)
+            if self.Gst:
+                Gst = self.Gst
                 self.player = Gst.ElementFactory.make("playbin", "player")
                 bus = self.player.get_bus()
                 bus.add_signal_watch()
                 bus.connect("message", self.on_gst_message)
                 self.playback_finished = False
-            else:
-                self.player = None
-                self.playback_finished = True
         except Exception as e:
             print(f"[warn] GStreamer init failed: {e}")
             self.player = None
             self.playback_finished = True
+
 
     def is_playing(self):
         return bool(self.is_playing_flag) and not bool(self.paused)
@@ -324,6 +337,7 @@ class TTSEngine:
         return bool(self.paused)
 
     def on_gst_message(self, bus, message):
+        Gst = self.Gst
         try:
             t = message.type
             if t == Gst.MessageType.EOS:
@@ -338,6 +352,7 @@ class TTSEngine:
                 self.playback_finished = True
         except Exception as e:
             print("on_gst_message error:", e)
+
 
     def split_sentences(self, text):
         if not text or not text.strip():
@@ -427,6 +442,7 @@ class TTSEngine:
         self.stop()
         time.sleep(0.05)
 
+        Gst = self.Gst
         self.should_stop = False
         self._tts_sentences = []
         self._tts_sids = []
@@ -601,6 +617,7 @@ class TTSEngine:
     def next_sentence(self):
         if not self._tts_sentences:
             return
+        Gst = self.Gst    
         with self._audio_lock:
             self._current_play_index = min(len(self._tts_sentences)-1, self._current_play_index + 1)
             idx = self._current_play_index
@@ -616,6 +633,7 @@ class TTSEngine:
     def prev_sentence(self):
         if not self._tts_sentences:
             return
+        Gst = self.Gst    
         with self._audio_lock:
             self._current_play_index = max(0, self._current_play_index - 1)
             idx = self._current_play_index
@@ -629,6 +647,7 @@ class TTSEngine:
         self._schedule_delayed_synthesis(idx, delay=0.5)
 
     def pause(self):
+        Gst = self.Gst        
         self.paused = True
         self._resume_event.clear()
         try:
@@ -643,6 +662,7 @@ class TTSEngine:
         self._cancel_delayed_timer()
 
     def stop(self):
+        Gst = self.Gst        
         self.should_stop = True
         self.paused = False
         self.playback_finished = True
