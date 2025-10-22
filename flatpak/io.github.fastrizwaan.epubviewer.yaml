@@ -1040,7 +1040,17 @@ modules:
         name: beautifulsoup4
         packagetype: bdist_wheel                   
 
-        
+  - name: fonts
+    buildsystem: simple
+    build-commands:
+      - mkdir -p /app/share/fonts
+      - install -Dm644 Charis-{Regular,Bold,BoldItalic,Italic}.ttf -t /app/share/fonts/
+    sources:
+      - type: archive
+        url: https://software.sil.org/downloads/r/charis/Charis-7.000.zip
+        sha256: e3237b1303c5d31af8f59b1d1914886c5e873b77c71390e4742fb3bc1c187666
+
+    
   - name: python3
     buildsystem: simple
     build-commands:
