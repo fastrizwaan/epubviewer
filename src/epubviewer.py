@@ -390,11 +390,6 @@ class TTSEngine:
             print(f"[error] Synthesis error: {e}")
             return None
 
-    # (speak_sentences_list and other methods kept unchanged — truncated here for brevity)
-    # Full implementations follow in part 2 to keep message manageable.
-# Continuation: TTSEngine rest + EPubViewer integration + application main
-# (Start by defining the remaining TTSEngine methods that were kept in the reference.)
-
     def _cancel_delayed_timer(self):
         with self._delayed_timer_lock:
             if self._delayed_timer:
@@ -1113,7 +1108,7 @@ class EPubViewer(Adw.ApplicationWindow):
         menu = Gio.Menu()
 
         width_menu = Gio.Menu()
-        for w in (50,100,150,200,250,300,350,400,450,500):
+        for w in (50,100,150, 180, 200,250,300,350,400,450,500, 550, 600, 650, 700, 750, 800, 850, 900, 950, 1000):
             width_menu.append(f"{w}px width", f"app.set-column-width({w})")
         menu.append_submenu("Column width", width_menu)
         self.columns_menu_button.set_menu_model(menu)
@@ -2570,7 +2565,7 @@ class EPubViewer(Adw.ApplicationWindow):
         except Exception:
             return
         
-        self.column_width_px = max(50, min(500, w))
+        self.column_width_px = max(50, min(1000, w))
         print(f"✓ Set column width to {self.column_width_px}px")
         
         # Update CSS via JavaScript instead of reloading page
