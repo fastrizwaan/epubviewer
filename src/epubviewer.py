@@ -12,12 +12,12 @@ from gi.repository import Gtk, Adw, Gio, GLib, Pango, PangoCairo, GObject, Gdk, 
 
 # --- Graphics Imports ---
 import cairo
-
+import subprocess
 # --- EPUB and Parsing Imports ---
 import ebooklib
 from ebooklib import epub
 from bs4 import BeautifulSoup, NavigableString, Tag, ProcessingInstruction, element, Comment
-
+from pathlib import Path
 APP_NAME = "EPUB Viewer"
 os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
 
@@ -238,8 +238,7 @@ def highlight_markup(text: str, query: str) -> str:
 # TTSEngine (copied & slightly trimmed for integration)
 # -------------------------
 class TTSEngine:
-    def __init__(self, webview_getter, base_temp_dir=None, kokoro_model_path=None, voices_bin_path=None):
-
+    def __init__(self, webview_getter, base_temp_dir=None, kokoro_model_path=None, voices_bin_path=None, piper_model_path=None):
         self.webview_getter = webview_getter
         self.base_temp_dir = base_temp_dir or tempfile.gettempdir()
         self.kokoro = None
@@ -266,42 +265,74 @@ class TTSEngine:
         self._delayed_timer_lock = threading.Lock()
 
         # --------------------------------------------------
-        # Optional TTS Dependencies
+        # Optional Dependencies Setup
         # --------------------------------------------------
+        self._tts_backend = "piper"  # default
+        self.PIPER_AVAILABLE = False
         self.TTS_AVAILABLE = False
         self.Kokoro = None
         self.Gst = None
 
-        # Try to import Kokoro (optional)
+        # Piper model path
+        self.piper_model_path = piper_model_path or os.environ.get(
+            "PIPER_MODEL_PATH", str(Path.home() / "Downloads/en_US-libritts-high.onnx")
+        )
+
+        # --------------------------------------------------
+        # Detect Piper
+        # --------------------------------------------------
+        try:
+            subprocess.run(["piper", "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+            if os.path.exists(self.piper_model_path):
+                self.PIPER_AVAILABLE = True
+                print(f"[info] Piper available (model: {self.piper_model_path})")
+            else:
+                print(f"[warn] Piper model missing: {self.piper_model_path}")
+        except FileNotFoundError:
+            print("[warn] Piper binary not found; skipping Piper support.")
+
+        # --------------------------------------------------
+        # Try to import Kokoro
+        # --------------------------------------------------
         try:
             from kokoro_onnx import Kokoro as _Kokoro
             self.Kokoro = _Kokoro
             self.TTS_AVAILABLE = True
+            print("[info] Kokoro module available")
         except ImportError as e:
             print(f"[warn] Kokoro unavailable: {e}")
 
-        # Try to import GStreamer (optional)
+        # --------------------------------------------------
+        # Try to import GStreamer
+        # --------------------------------------------------
         try:
             import gi
             gi.require_version("Gst", "1.0")
             from gi.repository import Gst
             self.Gst = Gst
             Gst.init(None)
-            self.TTS_AVAILABLE = True
+            print("[info] GStreamer initialized")
         except Exception as e:
             print(f"[warn] GStreamer unavailable: {e}")
 
         # --------------------------------------------------
-        # Initialize Kokoro if available
+        # Select Backend (priority: Kokoro > Piper)
         # --------------------------------------------------
-        if self.Kokoro:
+        if self.PIPER_AVAILABLE:
+            self._tts_backend = "piper"
+        elif self.Kokoro:
+            self._tts_backend = "kokoro"
+        else:
+            print("[warn] No TTS backend available.")
+            self._tts_backend = None
+
+        # --------------------------------------------------
+        # Initialize Kokoro if selected
+        # --------------------------------------------------
+        if self._tts_backend == "kokoro":
             try:
-                model_path = kokoro_model_path or os.environ.get(
-                    "KOKORO_ONNX_PATH", "/app/share/kokoro-models/kokoro-v1.0.onnx"
-                )
-                voices_path = voices_bin_path or os.environ.get(
-                    "KOKORO_VOICES_PATH", "/app/share/kokoro-models/voices-v1.0.bin"
-                )
+                model_path = kokoro_model_path or os.environ.get("KOKORO_ONNX_PATH", "/app/share/kokoro-models/kokoro-v1.0.onnx")
+                voices_path = voices_bin_path or os.environ.get("KOKORO_VOICES_PATH", "/app/share/kokoro-models/voices-v1.0.bin")
                 if os.path.exists(model_path) and os.path.exists(voices_path):
                     self.kokoro = self.Kokoro(model_path, voices_path)
                     print("[info] Kokoro TTS initialized")
@@ -310,22 +341,59 @@ class TTSEngine:
             except Exception as e:
                 print(f"[error] Failed to initialize Kokoro: {e}")
                 self.kokoro = None
+                self._tts_backend = "piper" if self.PIPER_AVAILABLE else None
 
         # --------------------------------------------------
-        # Initialize GStreamer if available
+        # Initialize GStreamer Player
         # --------------------------------------------------
-        try:
-            if self.Gst:
-                Gst = self.Gst
-                self.player = Gst.ElementFactory.make("playbin", "player")
+        if self.Gst:
+            try:
+                self.player = self.Gst.ElementFactory.make("playbin", "player")
                 bus = self.player.get_bus()
                 bus.add_signal_watch()
                 bus.connect("message", self.on_gst_message)
                 self.playback_finished = False
-        except Exception as e:
-            print(f"[warn] GStreamer init failed: {e}")
-            self.player = None
-            self.playback_finished = True
+            except Exception as e:
+                print(f"[warn] GStreamer init failed: {e}")
+                self.player = None
+                self.playback_finished = True
+
+    def set_backend(self, backend: str):
+        backend = backend.lower().strip()
+        if backend not in ("kokoro", "piper"):
+            print(f"[error] Invalid backend: {backend}")
+            return
+        if backend == "kokoro" and not self.Kokoro:
+            print("[error] Kokoro backend not available.")
+            return
+        if backend == "piper" and not self.PIPER_AVAILABLE:
+            print("[error] Piper backend not available.")
+            return
+        self._tts_backend = backend
+        print(f"[info] TTS backend set to: {backend}")
+
+    def synthesize_piper(self, text, out_path=None):
+        """Run Piper TTS and save to file."""
+        if not self.PIPER_AVAILABLE:
+            print("[error] Piper not available.")
+            return None
+
+        if not out_path:
+            out_path = os.path.join(self.base_temp_dir, "piper_tts.wav")
+
+        try:
+            subprocess.run(
+                ["piper", "--model", self.piper_model_path, "--output_file", out_path],
+                input=text.encode("utf-8"),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                check=True
+            )
+            print(f"[info] Piper synthesis complete: {out_path}")
+            return out_path
+        except subprocess.CalledProcessError as e:
+            print(f"[error] Piper synthesis failed: {e.stderr.decode().strip()}")
+            return None
 
 
     def is_playing(self):
@@ -365,30 +433,66 @@ class TTSEngine:
 
 
     def synthesize_sentence(self, sentence, voice, speed, lang):
-        if not self.kokoro:
-            return None
+        """Synthesize a single sentence using the selected TTS backend."""
+        base = self.base_temp_dir or tempfile.gettempdir()
+        os.makedirs(base, exist_ok=True)
+        out_wav = tempfile.NamedTemporaryFile(prefix="tts_", suffix=".wav", delete=False, dir=base).name
+
         try:
-            base = self.base_temp_dir or tempfile.gettempdir()
-            try:
-                os.makedirs(base, exist_ok=True)
-            except Exception:
-                base = tempfile.gettempdir()
-
-            samples, sample_rate = self.kokoro.create(sentence, voice=voice, speed=speed, lang=lang)
-
-            ntf = tempfile.NamedTemporaryFile(prefix="tts_", suffix=".wav", delete=False, dir=base)
-            ntf_name = ntf.name
-            ntf.close()
-            try:
+            # --------------------------------------------------
+            # Kokoro backend
+            # --------------------------------------------------
+            if self._tts_backend == "kokoro" and self.kokoro:
+                samples, sample_rate = self.kokoro.create(sentence, voice=voice, speed=speed, lang=lang)
                 import soundfile as sf
-                sf.write(ntf_name, samples, sample_rate)
-            except Exception as e:
-                print("[error] writing wav failed:", e)
+                sf.write(out_wav, samples, sample_rate)
+                print(f"[info] Kokoro synthesis complete: {out_wav}")
+                return out_wav
+
+            # --------------------------------------------------
+            # Piper backend
+            # --------------------------------------------------
+            elif self._tts_backend == "piper" and self.PIPER_AVAILABLE:
+                cmd = [
+                    "piper",
+                    "--model", str(self.piper_model_path),
+                    "--output_file", out_wav,
+                ]
+                try:
+                    # Piper expects UTF-8 bytes via stdin, not text mode
+                    result = subprocess.run(
+                        cmd,
+                        input=sentence.encode("utf-8"),
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        check=True,
+                    )
+                    # Verify output file exists before returning
+                    if os.path.exists(out_wav) and os.path.getsize(out_wav) > 0:
+                        print(f"[info] Piper synthesis complete: {out_wav}")
+                        return out_wav
+                    else:
+                        print(f"[error] Piper produced no output file: {out_wav}")
+                        if result.stderr:
+                            print(result.stderr.decode(errors="ignore"))
+                        return None
+                except subprocess.CalledProcessError as e:
+                    print(f"[error] Piper synthesis failed: {e.stderr.decode(errors='ignore')}")
+                    return None
+
+            # --------------------------------------------------
+            # No valid backend
+            # --------------------------------------------------
+            else:
+                print("[warn] No valid TTS backend for synthesis.")
                 return None
-            return ntf_name
+
+        except subprocess.CalledProcessError as e:
+            print(f"[error] Piper subprocess failed: {e.stderr.decode(errors='ignore')}")
         except Exception as e:
-            print(f"[error] Synthesis error: {e}")
-            return None
+            print(f"[error] TTS synthesis error: {e}")
+        return None
+
 
     def _cancel_delayed_timer(self):
         with self._delayed_timer_lock:
@@ -425,12 +529,18 @@ class TTSEngine:
         timer.daemon = True
         timer.start()
 
-    def speak_sentences_list(self, sentences_with_meta, voice="af_sarah", speed=1.0, lang="en-us", highlight_callback=None, finished_callback=None):
-        if not self.kokoro:
-            print("[warn] TTS not available")
+    def speak_sentences_list(self, sentences_with_meta, voice="af_sarah", speed=1.0, lang="en-us",
+                             highlight_callback=None, finished_callback=None):
+        # Ensure at least one backend is ready before continuing
+        if not (
+            (self._tts_backend == "kokoro" and self.kokoro)
+            or (self._tts_backend == "piper" and self.PIPER_AVAILABLE)
+        ):
+            print(f"[warn] TTS not available (backend={self._tts_backend})")
             if finished_callback:
                 GLib.idle_add(finished_callback)
             return
+
 
         self.stop()
         time.sleep(0.05)
