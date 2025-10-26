@@ -3889,7 +3889,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     left: {getattr(self, "page_margin_left", 12)}
                 }};
                 
-                function getContainerMetrics() {{
+                window.getContainerMetrics = function() {{
                     const container = document.querySelector('.ebook-content');
                     if (!container) return null;
                     
@@ -3930,18 +3930,18 @@ class EPubViewer(Adw.ApplicationWindow):
                         columnWidth: columnWidth,
                         pageWidth: pageWidth
                     }};
-                }}
+                }};
                 
-                function getCurrentColumnIndex() {{
+                window.getCurrentColumnIndex = function() {{
                     const metrics = getContainerMetrics();
                     if (!metrics || metrics.colCount <= 1) return 0;
                     
                     const scrollLeft = metrics.container.scrollLeft;
                     const columnIndex = Math.round(scrollLeft / metrics.pageWidth);
                     return Math.min(columnIndex, metrics.maxCol);
-                }}
+                }};
                 
-                function scrollToColumnIndex(index, smooth = true) {{
+                window.scrollToColumnIndex = function(index, smooth = true) {{
                     const metrics = getContainerMetrics();
                     if (!metrics) return;
                     
@@ -3956,7 +3956,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     }}
                     
                     console.log('→ Column ' + targetCol + ' (scroll: ' + targetScroll.toFixed(0) + 'px, max: ' + metrics.maxCol + ')');
-                }}
+                }};
                 
                 function smoothScrollTo(xTarget, yTarget) {{
                     const container = document.querySelector('.ebook-content');
