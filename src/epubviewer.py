@@ -237,6 +237,18 @@ def highlight_markup(text: str, query: str) -> str:
 # -------------------------
 # TTSEngine (copied & slightly trimmed for integration)
 # -------------------------
+import os
+import re
+import time
+import tempfile
+import threading
+import subprocess
+from pathlib import Path
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+# -------------------------
+# Parallel Optimized TTSEngine
+# -------------------------
 class TTSEngine:
     def __init__(self, webview_getter, base_temp_dir=None, kokoro_model_path=None, voices_bin_path=None, piper_model_path=None):
         self.webview_getter = webview_getter
@@ -263,6 +275,15 @@ class TTSEngine:
         self._synthesis_done = threading.Event()
         self._delayed_timer = None
         self._delayed_timer_lock = threading.Lock()
+        
+        # NEW: Parallel synthesis control
+        self.SYNTHESIS_BUFFER_SIZE = 5  # Synthesize 5 sentences ahead
+        self.MAX_PARALLEL_WORKERS = 2   # Number of parallel synthesis threads
+        self._synthesis_thread = None
+        self._synthesis_stop = threading.Event()
+        self._executor = None
+        self._active_futures = {}  # Track ongoing synthesis tasks
+        self.CLEANUP_THRESHOLD = 8  # Keep last 8 files
 
         # --------------------------------------------------
         # Optional Dependencies Setup
@@ -322,9 +343,6 @@ class TTSEngine:
             self._tts_backend = "piper"
         elif self.Kokoro:
             self._tts_backend = "kokoro"
-        else:
-            print("[warn] No TTS backend available.")
-            self._tts_backend = None
 
         # --------------------------------------------------
         # Initialize Kokoro if selected
@@ -431,7 +449,6 @@ class TTSEngine:
 
         return [p.replace('∯', '.').strip() for p in parts if p.strip()]
 
-
     def synthesize_sentence(self, sentence, voice, speed, lang):
         """Synthesize a single sentence using the selected TTS backend."""
         base = self.base_temp_dir or tempfile.gettempdir()
@@ -445,7 +462,27 @@ class TTSEngine:
             if self._tts_backend == "kokoro" and self.kokoro:
                 samples, sample_rate = self.kokoro.create(sentence, voice=voice, speed=speed, lang=lang)
                 import soundfile as sf
+                
+                # Write the file
                 sf.write(out_wav, samples, sample_rate)
+                
+                # FIX: Ensure file is fully written and flushed
+                try:
+                    # Force flush to disk
+                    with open(out_wav, 'r+b') as f:
+                        f.flush()
+                        os.fsync(f.fileno())
+                    
+                    # Verify file is complete by reading it back
+                    time.sleep(0.05)  # Brief pause
+                    test_data, test_sr = sf.read(out_wav)
+                    if len(test_data) < len(samples) * 0.9:  # Check if at least 90% present
+                        print(f"[warn] Audio file may be incomplete, waiting...")
+                        time.sleep(0.1)
+                except Exception as e:
+                    print(f"[warn] Could not verify audio file: {e}")
+                    time.sleep(0.1)  # Safety delay
+                
                 print(f"[info] Kokoro synthesis complete: {out_wav}")
                 return out_wav
 
@@ -459,7 +496,6 @@ class TTSEngine:
                     "--output_file", out_wav,
                 ]
                 try:
-                    # Piper expects UTF-8 bytes via stdin, not text mode
                     result = subprocess.run(
                         cmd,
                         input=sentence.encode("utf-8"),
@@ -467,8 +503,34 @@ class TTSEngine:
                         stderr=subprocess.PIPE,
                         check=True,
                     )
-                    # Verify output file exists before returning
+                    
+                    # CRITICAL: Wait for Piper to fully complete
+                    time.sleep(0.12)  # Increased delay
+                    
                     if os.path.exists(out_wav) and os.path.getsize(out_wav) > 0:
+                        # Validate WAV file structure
+                        try:
+                            import wave
+                            with wave.open(out_wav, 'rb') as wav:
+                                nframes = wav.getnframes()
+                                if nframes == 0:
+                                    print(f"[error] WAV has 0 frames, skipping")
+                                    return None
+                                print(f"[info] Piper OK: {nframes} frames")
+                        except Exception as e:
+                            print(f"[error] WAV validation failed: {e}")
+                            return None
+                        
+                        # Force flush
+                        try:
+                            with open(out_wav, 'r+b') as f:
+                                f.flush()
+                                os.fsync(f.fileno())
+                        except Exception:
+                            pass
+                        
+                        time.sleep(0.1)  # Extra safety
+                        
                         print(f"[info] Piper synthesis complete: {out_wav}")
                         return out_wav
                     else:
@@ -493,8 +555,168 @@ class TTSEngine:
             print(f"[error] TTS synthesis error: {e}")
         return None
 
+    def _synthesize_with_index(self, idx, sentence, voice, speed, lang):
+        """
+        Wrapper for synthesize_sentence that includes the index.
+        Used by parallel synthesis to track which sentence is being synthesized.
+        """
+        try:
+            audio_file = self.synthesize_sentence(sentence, voice, speed, lang)
+            return (idx, audio_file)
+        except Exception as e:
+            print(f"[error] Parallel synthesis failed for idx {idx}: {e}")
+            return (idx, None)
+
+    def _parallel_synthesis_worker(self):
+        """
+        Continuously synthesizes sentences in parallel using a thread pool.
+        Maintains a buffer of SYNTHESIS_BUFFER_SIZE sentences ahead.
+        """
+        try:
+            # Create thread pool executor
+            self._executor = ThreadPoolExecutor(max_workers=self.MAX_PARALLEL_WORKERS)
+            print(f"[parallel] Started synthesis worker with {self.MAX_PARALLEL_WORKERS} workers")
+            
+            while not self._synthesis_stop.is_set() and not self.should_stop:
+                current_idx = self._current_play_index
+                
+                # Determine which sentences need synthesis
+                sentences_to_synthesize = []
+                with self._audio_lock:
+                    for offset in range(self.SYNTHESIS_BUFFER_SIZE):
+                        idx = current_idx + offset
+                        if idx >= len(self._tts_sentences):
+                            break
+                        # Only synthesize if not already done and not currently being synthesized
+                        if idx not in self._audio_files and idx not in self._active_futures:
+                            sentences_to_synthesize.append(idx)
+                
+                # Submit synthesis tasks in parallel
+                for idx in sentences_to_synthesize:
+                    if self._synthesis_stop.is_set() or self.should_stop:
+                        break
+                    
+                    # Submit to thread pool
+                    future = self._executor.submit(
+                        self._synthesize_with_index,
+                        idx,
+                        self._tts_sentences[idx],
+                        self._tts_voice,
+                        self._tts_speed,
+                        self._tts_lang
+                    )
+                    self._active_futures[idx] = future
+                    print(f"[parallel] Submitted synthesis for sentence {idx}")
+                
+                # Check for completed synthesis tasks
+                completed_indices = []
+                for idx, future in list(self._active_futures.items()):
+                    if future.done():
+                        try:
+                            result_idx, audio_file = future.result(timeout=0.1)
+                            if audio_file:
+                                with self._audio_lock:
+                                    self._audio_files[result_idx] = audio_file
+                                print(f"[parallel] Completed synthesis for sentence {result_idx}")
+                        except Exception as e:
+                            print(f"[error] Failed to get result for idx {idx}: {e}")
+                        completed_indices.append(idx)
+                
+                # Remove completed futures
+                for idx in completed_indices:
+                    del self._active_futures[idx]
+                
+                # Brief sleep to avoid busy-waiting
+                time.sleep(0.05)
+                
+        except Exception as e:
+            print(f"[error] Parallel synthesis worker: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            # Shutdown thread pool
+            if self._executor:
+                print("[parallel] Shutting down synthesis worker...")
+                self._executor.shutdown(wait=True, cancel_futures=True)
+                print("[parallel] Synthesis worker stopped")
+
+    def speak_sentences_list(self, sentences_with_meta, voice="af_sarah", speed=1.0, lang="en-us",
+                             highlight_callback=None, finished_callback=None):
+        """
+        Start speaking a list of sentences with parallel buffered synthesis.
+        
+        Args:
+            sentences_with_meta: List of sentences (strings or dicts with 'sid' and 'text')
+            voice: Voice to use for TTS
+            speed: Speed multiplier for TTS
+            lang: Language code
+            highlight_callback: Callback function for highlighting current sentence
+            finished_callback: Callback function when playback completes
+        """
+        try:
+            from gi.repository import GLib
+        except ImportError:
+            GLib = None
+            
+        # Ensure at least one backend is ready before continuing
+        if not (
+            (self._tts_backend == "kokoro" and self.kokoro)
+            or (self._tts_backend == "piper" and self.PIPER_AVAILABLE)
+        ):
+            print(f"[warn] TTS not available (backend={self._tts_backend})")
+            if finished_callback:
+                if GLib:
+                    GLib.idle_add(finished_callback)
+                else:
+                    finished_callback()
+            return
+
+        # Stop any current playback
+        self.stop()
+        time.sleep(0.05)
+
+        # Reset state
+        self.should_stop = False
+        self._tts_sentences = []
+        self._tts_sids = []
+        
+        # Parse sentences with metadata
+        for s in sentences_with_meta:
+            if isinstance(s, dict):
+                self._tts_sids.append(s.get("sid"))
+                self._tts_sentences.append(s.get("text"))
+            else:
+                self._tts_sids.append(None)
+                self._tts_sentences.append(str(s))
+
+        # Set TTS parameters
+        self._tts_voice = voice
+        self._tts_speed = speed
+        self._tts_lang = lang
+        self._tts_finished_callback = finished_callback
+        self._tts_highlight_callback = highlight_callback
+        self._audio_files = {}
+        self._active_futures = {}
+        self._current_play_index = 0
+        self._synthesis_done.clear()
+        self._synthesis_stop.clear()
+        self._cancel_delayed_timer()
+        self.paused = False
+        self._resume_event.set()
+
+        # Start playback using parallel synthesis
+        self.start_playback(
+            self._tts_sentences,
+            self._tts_sids,
+            voice,
+            speed,
+            lang,
+            finished_callback,
+            highlight_callback
+        )
 
     def _cancel_delayed_timer(self):
+        """Cancel delayed synthesis timer"""
         with self._delayed_timer_lock:
             if self._delayed_timer:
                 try:
@@ -504,6 +726,7 @@ class TTSEngine:
                 self._delayed_timer = None
 
     def _schedule_delayed_synthesis(self, idx, delay=0.5):
+        """Schedule synthesis with a delay"""
         self._cancel_delayed_timer()
         def timer_cb():
             try:
@@ -529,89 +752,93 @@ class TTSEngine:
         timer.daemon = True
         timer.start()
 
-    def speak_sentences_list(self, sentences_with_meta, voice="af_sarah", speed=1.0, lang="en-us",
-                             highlight_callback=None, finished_callback=None):
-        # Ensure at least one backend is ready before continuing
-        if not (
-            (self._tts_backend == "kokoro" and self.kokoro)
-            or (self._tts_backend == "piper" and self.PIPER_AVAILABLE)
-        ):
-            print(f"[warn] TTS not available (backend={self._tts_backend})")
-            if finished_callback:
-                GLib.idle_add(finished_callback)
-            return
-
+    def start_playback(self, sentences, sids, voice, speed, lang, finished_callback, highlight_callback):
+        """
+        Start playback with parallel buffered synthesis.
+        Synthesizes multiple sentences at once for faster preparation.
+        """
+        try:
+            from gi.repository import GLib
+        except ImportError:
+            GLib = None
 
         self.stop()
-        time.sleep(0.05)
-
-        Gst = self.Gst
         self.should_stop = False
-        self._tts_sentences = []
-        self._tts_sids = []
-        for s in sentences_with_meta:
-            if isinstance(s, dict):
-                self._tts_sids.append(s.get("sid"))
-                self._tts_sentences.append(s.get("text"))
-            else:
-                self._tts_sids.append(None)
-                self._tts_sentences.append(str(s))
-
+        self.paused = False
+        self._resume_event.set()
+        self._tts_sentences = sentences
+        self._tts_sids = sids
         self._tts_voice = voice
         self._tts_speed = speed
         self._tts_lang = lang
         self._tts_finished_callback = finished_callback
         self._tts_highlight_callback = highlight_callback
-        self._audio_files = {}
         self._current_play_index = 0
+        self._audio_files = {}
+        self._active_futures = {}
         self._synthesis_done.clear()
-        self._cancel_delayed_timer()
-        self.paused = False
-        self._resume_event.set()
+        self._synthesis_stop.clear()
+
+        Gst = self.Gst
 
         def tts_thread():
             try:
-                total = len(self._tts_sentences)
-                def synthesis_worker():
-                    try:
-                        synth_idx = 0
-                        while not self.should_stop and synth_idx < total:
-                            with self._audio_lock:
-                                cur = self._current_play_index
-                            if synth_idx < cur:
-                                synth_idx = cur
-                            lookahead_limit = cur + (1 if self.paused else 3)
-                            if synth_idx > lookahead_limit:
-                                time.sleep(0.05); continue
-                            with self._audio_lock:
-                                if self._audio_files.get(synth_idx):
-                                    synth_idx += 1; continue
-                            if synth_idx <= lookahead_limit:
-                                if self.should_stop: break
-                                audio_file = self.synthesize_sentence(self._tts_sentences[synth_idx], self._tts_voice, self._tts_speed, self._tts_lang)
-                                if audio_file:
-                                    with self._audio_lock:
-                                        if synth_idx not in self._audio_files:
-                                            self._audio_files[synth_idx] = audio_file
-                                synth_idx += 1
-                            else:
-                                time.sleep(0.05)
-                        self._synthesis_done.set()
-                    except Exception as e:
-                        print(f"[error] Synthesis worker: {e}")
-                        self._synthesis_done.set()
-
-                synth_thread = threading.Thread(target=synthesis_worker, daemon=True)
-                synth_thread.start()
+                # =====================================================
+                # FIX 1: PRIME THE PIPELINE
+                # =====================================================
+                # Play silent audio first to initialize GStreamer properly
+                print("[fix] Priming GStreamer pipeline...")
+                try:
+                    import numpy as np
+                    import soundfile as sf
+                    
+                    # Create a tiny silent WAV file
+                    silence = np.zeros(int(0.1 * 22050))  # 0.1 second of silence at 22050 Hz
+                    silent_file = os.path.join(self.base_temp_dir, "prime.wav")
+                    sf.write(silent_file, silence, 22050)
+                    
+                    # Play it to initialize GStreamer properly
+                    if self.player:
+                        self.player.set_property("uri", f"file://{silent_file}")
+                        self.player.set_state(Gst.State.PLAYING)
+                        time.sleep(0.15)  # Let it "play" briefly
+                        self.player.set_state(Gst.State.NULL)
+                        time.sleep(0.05)
+                        
+                        # Clean up
+                        try:
+                            os.remove(silent_file)
+                        except Exception:
+                            pass
+                    print("[fix] Pipeline primed successfully")
+                except Exception as e:
+                    print(f"[warn] Could not prime pipeline: {e}")
+                
+                # =====================================================
+                # ORIGINAL CODE: Start the parallel synthesis worker
+                # =====================================================
+                self._synthesis_thread = threading.Thread(
+                    target=self._parallel_synthesis_worker,
+                    daemon=True
+                )
+                self._synthesis_thread.start()
 
                 self.is_playing_flag = True
 
+                # =====================================================
+                # Main playback loop
+                # =====================================================
                 while self._current_play_index < len(self._tts_sentences) and not self.should_stop:
                     idx = self._current_play_index
 
+                    # Highlight current sentence
                     if self._tts_highlight_callback:
-                        GLib.idle_add(self._tts_highlight_callback, idx, {"sid": self._tts_sids[idx], "text": self._tts_sentences[idx]})
+                        GLib.idle_add(self._tts_highlight_callback, idx, {
+                            "sid": self._tts_sids[idx],
+                            "text": self._tts_sentences[idx]
+                        })
 
+                    # Handle pause
                     while self.paused and not self.should_stop:
                         self._cancel_delayed_timer()
                         self._resume_event.wait(0.1)
@@ -619,32 +846,36 @@ class TTSEngine:
                     if self.should_stop:
                         break
 
+                    # Wait for audio file (with timeout)
                     audio_file = None
-                    with self._audio_lock:
-                        audio_file = self._audio_files.get(idx)
-
-                    if not audio_file:
-                        self._schedule_delayed_synthesis(idx, delay=0.5)
-                        waited = 0.0
-                        while not self.should_stop:
-                            with self._audio_lock:
-                                audio_file = self._audio_files.get(idx)
-                            if audio_file:
-                                break
-                            if self._current_play_index != idx:
-                                break
-                            time.sleep(0.02); waited += 0.02
-                            if self._synthesis_done.is_set() and waited > 0.5:
-                                break
+                    waited = 0.0
+                    max_wait = 5.0  # Maximum 5 seconds wait
+                    
+                    while not self.should_stop and waited < max_wait:
+                        with self._audio_lock:
+                            audio_file = self._audio_files.get(idx)
+                        
+                        if audio_file:
+                            break
+                        
+                        if self._current_play_index != idx:
+                            break
+                        
+                        time.sleep(0.05)
+                        waited += 0.05
 
                     if self.should_stop:
                         break
 
-                    with self._audio_lock:
-                        audio_file = self._audio_files.get(idx)
-
+                    # If still no audio, synthesize immediately (fallback)
                     if not audio_file:
-                        audio_file = self.synthesize_sentence(self._tts_sentences[idx], self._tts_voice, self._tts_speed, self._tts_lang)
+                        print(f"[fallback] Synthesizing {idx} immediately")
+                        audio_file = self.synthesize_sentence(
+                            self._tts_sentences[idx],
+                            self._tts_voice,
+                            self._tts_speed,
+                            self._tts_lang
+                        )
                         if audio_file:
                             with self._audio_lock:
                                 self._audio_files[idx] = audio_file
@@ -657,10 +888,35 @@ class TTSEngine:
                     if self.paused:
                         continue
 
+                    # =====================================================
+                    # FIX 2: PROPER PLAYBACK WITH STATE TRANSITIONS
+                    # =====================================================
+                    # Play the audio
                     if self.player:
                         try:
                             self.player.set_property("uri", f"file://{audio_file}")
-                            self.player.set_state(Gst.State.PLAYING)
+                            
+                            # FIX: Proper state transitions for first sentence
+                            if idx == 0:
+                                print("[fix] First sentence - using proper state transitions")
+                                # Go through proper GStreamer state progression
+                                self.player.set_state(Gst.State.NULL)
+                                time.sleep(0.05)
+                                
+                                self.player.set_state(Gst.State.READY)
+                                time.sleep(0.15)
+                                
+                                # PAUSED state allows GStreamer to preroll/buffer
+                                self.player.set_state(Gst.State.PAUSED)
+                                time.sleep(0.15)
+                                
+                                # Now play
+                                self.player.set_state(Gst.State.PLAYING)
+                                print("[fix] First sentence playback started")
+                            else:
+                                # Normal playback for subsequent sentences
+                                self.player.set_state(Gst.State.PLAYING)
+                            
                             self.playback_finished = False
                         except Exception as e:
                             print("player error:", e)
@@ -669,6 +925,7 @@ class TTSEngine:
                         self.playback_finished = True
                         time.sleep(0.05)
 
+                    # Wait for playback to finish
                     while not self.playback_finished and not self.should_stop:
                         if self._current_play_index != idx:
                             break
@@ -681,27 +938,42 @@ class TTSEngine:
                             break
                         time.sleep(0.02)
 
+                    # Stop playback
                     try:
                         if self.player:
                             self.player.set_state(Gst.State.NULL)
                     except Exception:
                         pass
 
+                    time.sleep(0.1)  # Give GStreamer time to close file handles    
+                    
+                    # Clean up old audio files to save memory
                     if (self._current_play_index == idx) and (not self.paused):
                         try:
                             with self._audio_lock:
-                                af = self._audio_files.get(idx)
-                                if af:
-                                    try: os.remove(af)
-                                    except Exception: pass
-                                    try: del self._audio_files[idx]
-                                    except Exception: pass
+                                cleanup_threshold = max(0, idx - 8)  # Keep last 8 files
+                                files_to_remove = [i for i in self._audio_files.keys() if i < cleanup_threshold]
+                                
+                                for i in files_to_remove:
+                                    af = self._audio_files.get(i)
+                                    if af:
+                                        try:
+                                            os.remove(af)
+                                            del self._audio_files[i]
+                                            # No logging unless it fails
+                                        except Exception as e:
+                                            # File still in use, skip silently
+                                            pass
                         except Exception:
                             pass
+                        
                         self._current_play_index = idx + 1
 
+                # Cleanup
                 self.is_playing_flag = False
+                self._synthesis_stop.set()  # Stop the synthesis worker
                 self._cancel_delayed_timer()
+                
                 if self._tts_highlight_callback and not self.should_stop:
                     GLib.idle_add(self._tts_highlight_callback, -1, {"sid": None, "text": ""})
                 if self._tts_finished_callback:
@@ -725,7 +997,10 @@ class TTSEngine:
             self._current_play_index = min(len(self._tts_sentences)-1, self._current_play_index + 1)
             idx = self._current_play_index
         if self._tts_highlight_callback:
-            GLib.idle_add(self._tts_highlight_callback, idx, {"sid": self._tts_sids[idx], "text": self._tts_sentences[idx]})
+            GLib.idle_add(self._tts_highlight_callback, idx, {
+                "sid": self._tts_sids[idx],
+                "text": self._tts_sentences[idx]
+            })
         try:
             if self.player:
                 self.player.set_state(Gst.State.NULL)
@@ -741,7 +1016,10 @@ class TTSEngine:
             self._current_play_index = max(0, self._current_play_index - 1)
             idx = self._current_play_index
         if self._tts_highlight_callback:
-            GLib.idle_add(self._tts_highlight_callback, idx, {"sid": self._tts_sids[idx], "text": self._tts_sentences[idx]})
+            GLib.idle_add(self._tts_highlight_callback, idx, {
+                "sid": self._tts_sids[idx],
+                "text": self._tts_sentences[idx]
+            })
         try:
             if self.player:
                 self.player.set_state(Gst.State.NULL)
@@ -765,26 +1043,53 @@ class TTSEngine:
         self._cancel_delayed_timer()
 
     def stop(self):
-        Gst = self.Gst        
+        Gst = self.Gst
         self.should_stop = True
         self.paused = False
         self.playback_finished = True
+        self._synthesis_stop.set()  # Stop synthesis worker
+        
         try:
             self._resume_event.set()
         except Exception:
             pass
         self._cancel_delayed_timer()
+        
         if self.player:
             try:
                 self.player.set_state(Gst.State.NULL)
             except Exception:
                 pass
+        
         self.is_playing_flag = False
+        
+        # Cancel all pending futures
+        if self._active_futures:
+            for future in self._active_futures.values():
+                future.cancel()
+            self._active_futures.clear()
+        
+        # Wait for threads to finish
         if self.current_thread:
             try:
                 self.current_thread.join(timeout=1.0)
             except Exception:
                 pass
+        
+        if self._synthesis_thread:
+            try:
+                self._synthesis_thread.join(timeout=1.0)
+            except Exception:
+                pass
+        
+        # Shutdown executor
+        if self._executor:
+            try:
+                self._executor.shutdown(wait=False, cancel_futures=True)
+            except Exception:
+                pass
+        
+        # Clean up all audio files
         try:
             with self._audio_lock:
                 for idx, path in list(self._audio_files.items()):
@@ -796,7 +1101,6 @@ class TTSEngine:
                 self._audio_files.clear()
         except Exception:
             pass
-
 
 class EPubViewer(Adw.ApplicationWindow):
     def __init__(self, app):
