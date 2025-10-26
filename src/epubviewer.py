@@ -438,17 +438,6 @@ class TTSEngine:
             print("on_gst_message error:", e)
 
 
-    def split_sentences(self, text):
-        if not text or not text.strip():
-            return []
-
-        abbreviations = r"(Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|Mt|vs|etc|Fig|fig|Eq|eq|Dept|No|pp|Rev|Lt|Col|Gen|Sgt|Capt|Sen|Rep|Gov|Pres|Ave|Rd|Blvd|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\."
-        protected = re.sub(abbreviations, lambda m: m.group(0).replace('.', '∯'), text)
-
-        parts = re.split(r'(?<=[.!?])\s+(?=[A-Z0-9"\'])', protected)
-
-        return [p.replace('∯', '.').strip() for p in parts if p.strip()]
-
     def synthesize_sentence(self, sentence, voice, speed, lang):
         """Synthesize a single sentence using the selected TTS backend."""
         base = self.base_temp_dir or tempfile.gettempdir()
@@ -2146,18 +2135,46 @@ class EPubViewer(Adw.ApplicationWindow):
 
 
     def _split_text_into_sentences(self, text):
-        """Improved sentence splitter ignoring common abbreviations like 'Mr.', 'Dr.' etc."""
+        """Improved sentence splitter ignoring common abbreviations and handling smart quotes."""
         if not text or not text.strip():
             return []
 
-        # Common abbreviations not to end a sentence
-        abbreviations = r"(Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|Mt|vs|etc|Fig|fig|Eq|eq|Dept|No|pp|Rev|Lt|Col|Gen|Sgt|Capt|Sen|Rep|Gov|Pres|Ave|Rd|Blvd|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)\."
-        protected = re.sub(abbreviations, lambda m: m.group(0).replace('.', '∯'), text)
+        # Convert smart quotes to regular quotes
+        # Single quotes
+        text = text.replace('\'', "'")  # Left single quotation mark
+        text = text.replace('\'', "'")  # Right single quotation mark  
+        text = text.replace('`', "'")   # Grave accent (backtick)
+        text = text.replace('´', "'")   # Acute accent
+        
+        # Double quotes
+        text = text.replace('"', '"')   # Left double quotation mark
+        text = text.replace('"', '"')   # Right double quotation mark
+        text = text.replace('``', '"')  # Double grave accent
+        text = text.replace('""', '"')  # Double acute accent
+        
+        # Comprehensive list of common abbreviations (case-insensitive)
+        abbrev_pattern = r'\b(?:Mr|Mrs|Ms|Dr|Prof|Sr|Jr|St|Mt|vs|etc|Fig|fig|Eq|eq|Dept|No|pp|Rev|Lt|Col|Gen|Sgt|Capt|Sen|Rep|Gov|Pres|Ave|Rd|Blvd|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec|Inc|Corp|Ltd|Co|PhD|MD|BA|MA|Bros|viz|al|cf|e\.g|i\.e|et|al)\b'
+        
+        # Protect abbreviations by replacing dots with a placeholder
+        protected_text = re.sub(f'({abbrev_pattern})\\.', 
+                            lambda m: m.group(0).replace('.', '∯'), 
+                            text, 
+                            flags=re.IGNORECASE)
 
-        # Split at real sentence boundaries (., ?, !)
-        parts = re.split(r'(?<=[.!?])\s+(?=[A-Z0-9"\'])', protected)
-
-        sentences = [p.replace('∯', '.').strip() for p in parts if p.strip()]
+        # Split on sentence-ending punctuation followed by whitespace and capital letter/digit/quotation
+        # This pattern looks for: [.!?] + whitespace + [A-Z0-9"'`([] 
+        # Using a simpler character class with proper escaping
+        sentence_end_pattern = r'(?<=[.!?])\s+(?=[A-Z0-9\'"`\(\[])'
+        
+        parts = re.split(sentence_end_pattern, protected_text)
+        
+        # Clean up and restore original dots
+        sentences = []
+        for part in parts:
+            cleaned = part.replace('∯', '.').strip()
+            if cleaned:
+                sentences.append(cleaned)
+        
         return sentences
 
 
