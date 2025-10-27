@@ -3833,6 +3833,14 @@ class EPubViewer(Adw.ApplicationWindow):
                 .ebook-content p, .ebook-content div {{
                     break-inside: auto;
                 }}
+                /* Extra column spacer at the end */
+                .extra-column-spacer {{
+                    display: block;
+                    height: 100%;
+                    min-height: 100vh;
+                    width: 1px;
+                    visibility: hidden;
+                }}
             """
 
             # user overrides (font/size/line-height/justify)
@@ -4315,7 +4323,9 @@ class EPubViewer(Adw.ApplicationWindow):
             link_intercept_script + js_detect_columns
         )
 
-        wrapped = "<!DOCTYPE html><html><head>{}</head><body><div class=\"ebook-content\">{}</div></body></html>".format(head, raw_html)
+        # Add extra empty column at the end for proper spacing in multi-column mode
+        extra_column_html = '<div class="extra-column-spacer" style="height: 100%; width: 1px;"></div>'
+        wrapped = "<!DOCTYPE html><html><head>{}</head><body><div class=\"ebook-content\">{}{}</div></body></html>".format(head, raw_html, extra_column_html)
         return wrapped
 
     # ---- file dialog ----
