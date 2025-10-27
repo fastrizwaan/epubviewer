@@ -2939,6 +2939,13 @@ class EPubViewer(Adw.ApplicationWindow):
                         position: relative;
                     `;
                     window.isSingleColumnMode = true;
+                    
+                    // Hide the extra column spacer in single-column mode
+                    const spacer = document.querySelector('.extra-column-spacer');
+                    if (spacer) {{
+                        spacer.style.display = 'none';
+                        console.log('🚫 Hidden extra column spacer (single-column mode)');
+                    }}
                 }} else {{
                     // MULTI-COLUMN MODE: Use column layout with horizontal scroll
                     console.log('📰 Switching to multi-column mode (' + wouldFitCols + ' cols)');
@@ -2958,6 +2965,13 @@ class EPubViewer(Adw.ApplicationWindow):
                         position: relative;
                     `;
                     window.isSingleColumnMode = false;
+                    
+                    // Show the extra column spacer in multi-column mode
+                    const spacer = document.querySelector('.extra-column-spacer');
+                    if (spacer) {{
+                        spacer.style.display = 'block';
+                        console.log('✅ Shown extra column spacer (multi-column mode)');
+                    }}
                     
                     // Snap to column position after layout change
                     setTimeout(() => {{
@@ -4223,6 +4237,13 @@ class EPubViewer(Adw.ApplicationWindow):
                             position: relative;
                         `;
                         window.isSingleColumnMode = true;
+                        
+                        // Hide the extra column spacer in single-column mode
+                        const spacer = document.querySelector('.extra-column-spacer');
+                        if (spacer) {{
+                            spacer.style.display = 'none';
+                            console.log('🚫 Hidden extra column spacer (single-column mode)');
+                        }}
                     }} else if (wouldFitCols > 1) {{
                         const needsLayoutUpdate = window.isSingleColumnMode !== false;
                         
@@ -4245,6 +4266,13 @@ class EPubViewer(Adw.ApplicationWindow):
                                 position: relative;
                             `;
                             window.isSingleColumnMode = false;
+                            
+                            // Show the extra column spacer in multi-column mode
+                            const spacer = document.querySelector('.extra-column-spacer');
+                            if (spacer) {{
+                                spacer.style.display = 'block';
+                                console.log('✅ Shown extra column spacer (multi-column mode)');
+                            }}
                         }}
                         
                         // Snap to column - whether switching or just resizing
