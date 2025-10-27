@@ -1112,7 +1112,12 @@ class EPubViewer(Adw.ApplicationWindow):
 
         # NEW: column settings - only width-based mode
         self.column_width_px = 300           # 50..500 px
-        self._column_gap = 32                # px gap between columns
+        self._column_gap = 50                # px gap between columns
+        
+        # Font and text settings defaults
+        self.user_font_size = 15             # default font size in pt
+        self.user_justify = "full"           # default justification
+        self.user_line_height = 1.50         # default line height
 
         
         # library
@@ -1273,7 +1278,7 @@ class EPubViewer(Adw.ApplicationWindow):
         extra_row.set_valign(Gtk.Align.CENTER)
 
         # Column gap spin (px)
-        gap_adj = Gtk.Adjustment(value=getattr(self, "_column_gap", 24), lower=0, upper=200, step_increment=1, page_increment=10)
+        gap_adj = Gtk.Adjustment(value=getattr(self, "_column_gap", 50), lower=0, upper=200, step_increment=1, page_increment=10)
         self.col_gap_spin = Gtk.SpinButton.new(gap_adj, climb_rate=1.0, digits=0)
         self.col_gap_spin.set_tooltip_text("Column gap (px)")
         def on_gap_changed(spin):
@@ -1294,13 +1299,14 @@ class EPubViewer(Adw.ApplicationWindow):
         self.justify_dropdown.set_tooltip_text("Justification")
         # set initial selection from stored setting
         try:
-            curj = getattr(self, "user_justify", None)
-            idx = 0
-            if curj == "full": idx = 1
+            curj = getattr(self, "user_justify", "full")  # default to "full"
+            idx = 1  # default to Full
+            if curj == "none": idx = 0
+            elif curj == "full": idx = 1
             elif curj == "hyphen": idx = 2
             self.justify_dropdown.set_selected(idx)
         except Exception:
-            pass
+            self.justify_dropdown.set_selected(1)  # default to Full
         def on_justify_notify(dd, prop):
             try:
                 sel = dd.get_selected_item()
@@ -1318,7 +1324,7 @@ class EPubViewer(Adw.ApplicationWindow):
         extra_row.append(self.justify_dropdown)
 
         # Line-height spin (0.80 .. 3.00 step 0.05)
-        lh_adj = Gtk.Adjustment(value=getattr(self, "user_line_height", 1.4), lower=0.8, upper=3.0, step_increment=0.05, page_increment=0.1)
+        lh_adj = Gtk.Adjustment(value=getattr(self, "user_line_height", 1.50), lower=0.8, upper=3.0, step_increment=0.05, page_increment=0.1)
         self.line_height_spin = Gtk.SpinButton.new(lh_adj, climb_rate=0.05, digits=2)
         self.line_height_spin.set_tooltip_text("Line height (0.8 - 3.0)")
         def on_lh_changed(spin):
@@ -1335,10 +1341,10 @@ class EPubViewer(Adw.ApplicationWindow):
 
         # defaults
         if not hasattr(self, "page_margin_top"):
-            self.page_margin_top = 12
-            self.page_margin_right = 12
-            self.page_margin_bottom = 12
-            self.page_margin_left = 12
+            self.page_margin_top = 50
+            self.page_margin_right = 50
+            self.page_margin_bottom = 50
+            self.page_margin_left = 50
         if not hasattr(self, "_margins_linked"):
             self._margins_linked = True
 
@@ -1893,14 +1899,19 @@ class EPubViewer(Adw.ApplicationWindow):
             self.font_dropdown.set_list_factory(list_factory)
 
             if font_names.get_n_items() > 0:
-                # keep previous selection if exists
+                # keep previous selection if exists, or default to sans-serif
                 try:
                     cur = getattr(self, "user_font_family", None)
                     if cur and cur in names:
                         idx = names.index(cur)
-                        self.font_dropdown.set_selected(idx)
                     else:
-                        self.font_dropdown.set_selected(0)
+                        # Try to find "sans-serif" or a font with "Sans" in the name
+                        idx = 0
+                        for i, name in enumerate(names):
+                            if "sans-serif" in name.lower() or "sans" in name.lower():
+                                idx = i
+                                break
+                    self.font_dropdown.set_selected(idx)
                 except Exception:
                     self.font_dropdown.set_selected(0)
 
@@ -1926,11 +1937,18 @@ class EPubViewer(Adw.ApplicationWindow):
                         var fam = window.__user_font_settings.family ? window.__user_font_settings.family : '';
                         var sz = window.__user_font_settings.size ? window.__user_font_settings.size : '';
                         var css = '';
-                        if(fam) css += "body, .ebook-content {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "', sans-serif !important; }}\\n";
-                        if(sz) css += "body, .ebook-content {{ font-size: " + sz + " !important; }}\\n";
+                        if(fam) {{
+                          css += "body, .ebook-content {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "', sans-serif !important; }}\\n";
+                          css += ".ebook-content * {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "', sans-serif !important; }}\\n";
+                        }}
+                        if(sz) {{
+                          css += "body, .ebook-content {{ font-size: " + sz + " !important; }}\\n";
+                          css += ".ebook-content * {{ font-size: " + sz + " !important; }}\\n";
+                        }}
                         s.textContent = css;
-                      }} catch(e){{ console.log('apply-font-family-error', e); }}
-                    }})();"""
+                      }} catch(e){{ console.log('apply-font-error', e); }}
+                    }})();
+                    """
                     try:
                         self.webview.evaluate_javascript(js, -1, None, None, None, None, None)
                     except Exception:
@@ -2053,6 +2071,7 @@ class EPubViewer(Adw.ApplicationWindow):
                 if(fam) css += "body, .ebook-content { font-family: '" + fam.replace(/'/g,"\\\\'") + "', sans-serif !important; }\\n";
                 if(sz) css += "body, .ebook-content { font-size: " + sz + " !important; }\\n";
                 if(fam) css += ".ebook-content * { font-family: '" + fam.replace(/'/g,"\\\\'") + "', sans-serif !important; }\\n";
+                if(sz) css += ".ebook-content * { font-size: " + sz + " !important; }\\n";
                 s.textContent = css;
                 return true;
               } catch(e){ return false; }
@@ -2085,13 +2104,13 @@ class EPubViewer(Adw.ApplicationWindow):
 
             # default try to reuse previous selection
             try:
-                cur_sz = getattr(self, "user_font_size", None)
+                cur_sz = getattr(self, "user_font_size", 15)  # default to 15
                 if cur_sz and str(cur_sz) in [str(x) for x in sizes]:
                     idx = sizes.index(int(cur_sz))
                 else:
-                    idx = sizes.index(12) if 12 in sizes else 0
+                    idx = sizes.index(15) if 15 in sizes else 0
             except Exception:
-                idx = 0
+                idx = sizes.index(15) if 15 in sizes else 0
             self.font_size_dropdown.set_selected(idx)
 
             def _on_size_notify(dd, prop):
@@ -2116,8 +2135,14 @@ class EPubViewer(Adw.ApplicationWindow):
                         var fam = window.__user_font_settings.family ? window.__user_font_settings.family : '';
                         var sz = window.__user_font_settings.size ? window.__user_font_settings.size : '';
                         var css = '';
-                        if(fam) css += "body, .ebook-content {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "', sans-serif !important; }}\\n";
-                        if(sz) css += "body, .ebook-content {{ font-size: " + sz + " !important; }}\\n";
+                        if(fam) {{
+                          css += "body, .ebook-content {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "', sans-serif !important; }}\\n";
+                          css += ".ebook-content * {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "', sans-serif !important; }}\\n";
+                        }}
+                        if(sz) {{
+                          css += "body, .ebook-content {{ font-size: " + sz + " !important; }}\\n";
+                          css += ".ebook-content * {{ font-size: " + sz + " !important; }}\\n";
+                        }}
                         s.textContent = css;
                       }} catch(e){{ console.log('apply-font-size-error', e); }}
                     }})();"""
@@ -2829,11 +2854,11 @@ class EPubViewer(Adw.ApplicationWindow):
         if not getattr(self, "webview", None):
             return
         
-        gap_val = getattr(self, "_column_gap", 32)
-        mt = int(getattr(self, "page_margin_top", 12))
-        mr = int(getattr(self, "page_margin_right", 12))
-        mb = int(getattr(self, "page_margin_bottom", 12))
-        ml = int(getattr(self, "page_margin_left", 12))
+        gap_val = getattr(self, "_column_gap", 50)
+        mt = int(getattr(self, "page_margin_top", 50))
+        mr = int(getattr(self, "page_margin_right", 50))
+        mb = int(getattr(self, "page_margin_bottom", 50))
+        ml = int(getattr(self, "page_margin_left", 50))
         
         # JavaScript to dynamically apply correct layout
         js = f"""
@@ -3524,7 +3549,7 @@ class EPubViewer(Adw.ApplicationWindow):
     def setup_column_gap_spinner(self, extra_row):
         """Setup column gap spinner with JS-based updates."""
         gap_adj = Gtk.Adjustment(
-            value=getattr(self, "_column_gap", 24),
+            value=getattr(self, "_column_gap", 50),
             lower=0,
             upper=200,
             step_increment=1,
@@ -3792,15 +3817,15 @@ class EPubViewer(Adw.ApplicationWindow):
             # Always use column-width mode
             col_decl = "column-width: {}px; -webkit-column-width: {}px;".format(self.column_width_px, self.column_width_px)
 
-            gap_val = getattr(self, "_column_gap", 32)
+            gap_val = getattr(self, "_column_gap", 50)
             gap_decl = "column-gap: {}px; -webkit-column-gap: {}px;".format(gap_val, gap_val)
             fill_decl = "column-fill: auto; -webkit-column-fill: auto;"
 
             # page margins
-            mt = int(getattr(self, "page_margin_top", 12))
-            mr = int(getattr(self, "page_margin_right", 12))
-            mb = int(getattr(self, "page_margin_bottom", 12))
-            ml = int(getattr(self, "page_margin_left", 12))
+            mt = int(getattr(self, "page_margin_top", 50))
+            mr = int(getattr(self, "page_margin_right", 50))
+            mb = int(getattr(self, "page_margin_bottom", 50))
+            ml = int(getattr(self, "page_margin_left", 50))
             padding_decl = f"padding: {mt}px {mr}px {mb}px {ml}px;"
 
             # Always enable both scroll directions - JavaScript will manage based on actual column count
@@ -3920,12 +3945,12 @@ class EPubViewer(Adw.ApplicationWindow):
                 console.log('Column width: {self.column_width_px}px');
                 
                 window.currentColumnWidth = {self.column_width_px};
-                window.currentGap = {getattr(self, "_column_gap", 32)};
+                window.currentGap = {getattr(self, "_column_gap", 50)};
                 window.currentPadding = {{
-                    top: {getattr(self, "page_margin_top", 12)},
-                    right: {getattr(self, "page_margin_right", 12)},
-                    bottom: {getattr(self, "page_margin_bottom", 12)},
-                    left: {getattr(self, "page_margin_left", 12)}
+                    top: {getattr(self, "page_margin_top", 50)},
+                    right: {getattr(self, "page_margin_right", 50)},
+                    bottom: {getattr(self, "page_margin_bottom", 50)},
+                    left: {getattr(self, "page_margin_left", 50)}
                 }};
                 
                 window.getContainerMetrics = function() {{
