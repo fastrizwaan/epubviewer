@@ -1,5 +1,5 @@
 0.01
-- [ ] Bundle fonts like Chris SIL in flatpak
+- [x] Bundle fonts like Charis SIL in flatpak
 - [ ] Settings default:
       - [ ] 1. columns 2
       - [ ] 2. column gap 100
@@ -19,7 +19,6 @@ BUGS:
   - [ ] fixed width columns should also snap on resize, show/hide sidebar.
 Features:
   - [ ] lower the height of toc items (expander and action row)
-  - [ ] implement horizontal scrolling for 1 column along with vertical one. only when we select 1 column, if fixed width causes 1 column like using large pixel width or with huge gap and margin with fixed columns in a medium to small window.
   - [ ] like margins, we should have canvas size, so that irrespective of margins, if we select 2 columns it will show 2 columns with gap, much like foliate or margin left/right!?
   - [ ] next/previous should behave like page down/page; and when we reach at the end of a chapter; then behave like 'next/previous chapter' like is currently is.
   
