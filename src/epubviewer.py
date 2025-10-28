@@ -2913,7 +2913,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     const maxScroll = metrics.container.scrollWidth - metrics.clientWidth;
                     const clampedScroll = Math.max(0, Math.min(maxScroll, targetScroll));
                     metrics.container.scrollLeft = clampedScroll;
-                    console.log('→ Column ' + index + ' (scroll: ' + clampedScroll.toFixed(0) + 'px)');
+                    console.log('→ Column ' + index + ' (scroll: ' + clampedScroll.toFixed(0) + 'px, maxScroll: ' + maxScroll.toFixed(0) + 'px)');
                 }}
                 
                 // Store current position before layout change
@@ -3877,7 +3877,12 @@ class EPubViewer(Adw.ApplicationWindow):
                     display: block;
                     height: 100%;
                     min-height: 100vh;
-                    width: 1px;
+                    /* Make it as wide as a column to ensure it creates a full column */
+                    width: 100%;
+                    max-width: 100%;
+                    /* Force this element to start in a new column */
+                    break-before: column;
+                    -webkit-column-break-before: auto;
                     visibility: hidden;
                 }}
             """
@@ -3979,7 +3984,15 @@ class EPubViewer(Adw.ApplicationWindow):
                     const totalColumns = Math.max(1, Math.round(scrollWidth / pageWidth));
                     
                     // Maximum column index we can navigate to
-                    const maxCol = totalColumns - 1;
+                    // In multi-column mode, exclude the last column (spacer) from navigation
+                    const spacer = document.querySelector('.extra-column-spacer');
+                    const hasSpacerColumn = spacer && window.getComputedStyle(spacer).display !== 'none';
+                    const maxCol = hasSpacerColumn ? Math.max(0, totalColumns - 3) : totalColumns - 1;
+                    
+                    if (hasSpacerColumn) {{
+                        console.log('📊 Column metrics: total=' + totalColumns + ', maxCol=' + maxCol + ' (excluded spacer column)');
+                    }}
+                    
                     
                     return {{
                         container: container,
@@ -4013,13 +4026,17 @@ class EPubViewer(Adw.ApplicationWindow):
                     const targetCol = Math.max(0, Math.min(index, metrics.maxCol));
                     const targetScroll = targetCol * metrics.pageWidth;
                     
+                    // Also ensure we don't scroll past actual content (excluding spacer)
+                    const maxScroll = metrics.container.scrollWidth - metrics.clientWidth;
+                    const clampedScroll = Math.min(targetScroll, maxScroll);
+                    
                     if (smooth) {{
-                        smoothScrollTo(targetScroll, metrics.container.scrollTop);
+                        smoothScrollTo(clampedScroll, metrics.container.scrollTop);
                     }} else {{
-                        metrics.container.scrollLeft = targetScroll;
+                        metrics.container.scrollLeft = clampedScroll;
                     }}
                     
-                    console.log('→ Column ' + targetCol + ' (scroll: ' + targetScroll.toFixed(0) + 'px, max: ' + metrics.maxCol + ')');
+                    console.log('→ Column ' + targetCol + ' (scroll: ' + clampedScroll.toFixed(0) + 'px, max: ' + metrics.maxCol + ')');
                 }};
                 
                 function smoothScrollTo(xTarget, yTarget) {{
@@ -4060,9 +4077,13 @@ class EPubViewer(Adw.ApplicationWindow):
                     const clampedIndex = Math.max(0, Math.min(columnIndex, metrics.maxCol));
                     const targetScroll = clampedIndex * metrics.pageWidth;
                     
-                    if (Math.abs(targetScroll - currentScroll) > 2) {{
-                        console.log('↹ Snap to col ' + clampedIndex + ' (' + currentScroll.toFixed(0) + '→' + targetScroll.toFixed(0) + ')');
-                        metrics.container.scrollLeft = targetScroll;
+                    // Also ensure we don't snap past actual content
+                    const maxScroll = metrics.container.scrollWidth - metrics.clientWidth;
+                    const finalScroll = Math.min(targetScroll, maxScroll);
+                    
+                    if (Math.abs(finalScroll - currentScroll) > 2) {{
+                        console.log('↹ Snap to col ' + clampedIndex + ' (' + currentScroll.toFixed(0) + '→' + finalScroll.toFixed(0) + ')');
+                        metrics.container.scrollLeft = finalScroll;
                     }}
                 }}
                 
