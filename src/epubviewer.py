@@ -3987,7 +3987,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     // In multi-column mode, exclude the last column (spacer) from navigation
                     const spacer = document.querySelector('.extra-column-spacer');
                     const hasSpacerColumn = spacer && window.getComputedStyle(spacer).display !== 'none';
-                    const maxCol = hasSpacerColumn ? Math.max(0, totalColumns - 3) : totalColumns - 1;
+                    const maxCol = hasSpacerColumn ? Math.max(0, totalColumns - 3) : totalColumns - 3;
                     
                     if (hasSpacerColumn) {{
                         console.log('📊 Column metrics: total=' + totalColumns + ', maxCol=' + maxCol + ' (excluded spacer column)');
