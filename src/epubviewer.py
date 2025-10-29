@@ -1115,7 +1115,7 @@ class EPubViewer(Adw.ApplicationWindow):
         self._column_gap = 50                # px gap between columns
         
         # Font and text settings defaults
-        self.user_font_size = 15             # default font size in pt
+        # No default font size - use epub's original fonts
         self.user_justify = "full"           # default justification
         self.user_line_height = 1.50         # default line height
 
@@ -1845,10 +1845,14 @@ class EPubViewer(Adw.ApplicationWindow):
             document.head.appendChild(style);
           }}
           let css = '';
-          if({json.dumps(font_name)} !== null)
-            css += `body, .ebook-content {{ font-family: '{font_name}', sans-serif !important; }}`;
-          if({json.dumps(size_pt)} !== null)
+          if({json.dumps(font_name)} !== null) {{
+            css += `body, .ebook-content {{ font-family: '{font_name}' !important; }}`;
+            css += `.ebook-content * {{ font-family: '{font_name}' !important; }}`;
+          }}
+          if({json.dumps(size_pt)} !== null) {{
             css += `body, .ebook-content {{ font-size: {size_pt}pt !important; }}`;
+            css += `.ebook-content * {{ font-size: {size_pt}pt !important; }}`;
+          }}
           style.textContent = css;
         }})();"""
         try:
@@ -1938,8 +1942,8 @@ class EPubViewer(Adw.ApplicationWindow):
                         var sz = window.__user_font_settings.size ? window.__user_font_settings.size : '';
                         var css = '';
                         if(fam) {{
-                          css += "body, .ebook-content {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "', sans-serif !important; }}\\n";
-                          css += ".ebook-content * {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "', sans-serif !important; }}\\n";
+                          css += "body, .ebook-content {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "' !important; }}\\n";
+                          css += ".ebook-content * {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "' !important; }}\\n";
                         }}
                         if(sz) {{
                           css += "body, .ebook-content {{ font-size: " + sz + " !important; }}\\n";
@@ -1992,10 +1996,10 @@ class EPubViewer(Adw.ApplicationWindow):
               var fam = window.__user_font_settings.family || '';
               var sz  = window.__user_font_settings.size || '';
               var css = '';
-              if(fam) css += "body, .ebook-content { font-family: '" + fam.replace(/'/g,"\\'") + "', sans-serif !important; }\\n";
+              if(fam) css += "body, .ebook-content { font-family: '" + fam.replace(/'/g,"\\'") + "' !important; }\\n";
               if(sz)  css += "body, .ebook-content { font-size: " + sz + " !important; }\\n";
               // also apply to common selectors inside EPUB (increase specificity)
-              if(fam) css += ".ebook-content * { font-family: '" + fam.replace(/'/g,"\\'") + "', sans-serif !important; }\\n";
+              if(fam) css += ".ebook-content * { font-family: '" + fam.replace(/'/g,"\\'") + "' !important; }\\n";
               s.textContent = css;
             }
             // observer: keep our style last in <head> so it overrides earlier rules
@@ -2068,9 +2072,9 @@ class EPubViewer(Adw.ApplicationWindow):
                 var fam = window.__user_font_settings.family || '';
                 var sz = window.__user_font_settings.size || '';
                 var css = '';
-                if(fam) css += "body, .ebook-content { font-family: '" + fam.replace(/'/g,"\\\\'") + "', sans-serif !important; }\\n";
+                if(fam) css += "body, .ebook-content { font-family: '" + fam.replace(/'/g,"\\\\'") + "' !important; }\\n";
                 if(sz) css += "body, .ebook-content { font-size: " + sz + " !important; }\\n";
-                if(fam) css += ".ebook-content * { font-family: '" + fam.replace(/'/g,"\\\\'") + "', sans-serif !important; }\\n";
+                if(fam) css += ".ebook-content * { font-family: '" + fam.replace(/'/g,"\\\\'") + "' !important; }\\n";
                 if(sz) css += ".ebook-content * { font-size: " + sz + " !important; }\\n";
                 s.textContent = css;
                 return true;
@@ -2136,8 +2140,8 @@ class EPubViewer(Adw.ApplicationWindow):
                         var sz = window.__user_font_settings.size ? window.__user_font_settings.size : '';
                         var css = '';
                         if(fam) {{
-                          css += "body, .ebook-content {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "', sans-serif !important; }}\\n";
-                          css += ".ebook-content * {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "', sans-serif !important; }}\\n";
+                          css += "body, .ebook-content {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "' !important; }}\\n";
+                          css += ".ebook-content * {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "' !important; }}\\n";
                         }}
                         if(sz) {{
                           css += "body, .ebook-content {{ font-size: " + sz + " !important; }}\\n";
@@ -3839,6 +3843,9 @@ class EPubViewer(Adw.ApplicationWindow):
                     padding: 0;
                     height: 100vh;
                     overflow: hidden;
+                    /* Default fallback if epub has no font specified */
+                    font-family: sans-serif;
+                    font-size: 12pt;
                 }}
                 .ebook-content {{
                     {col_decl}
@@ -3908,7 +3915,7 @@ class EPubViewer(Adw.ApplicationWindow):
 
             if fam:
                 safe_fam = str(fam).replace("'", "\\'")
-                extra += ".ebook-content, .ebook-content * { font-family: '" + safe_fam + "', sans-serif !important; }\n"
+                extra += ".ebook-content, .ebook-content * { font-family: '" + safe_fam + "' !important; }\n"
             if sz_val:
                 extra += ".ebook-content, .ebook-content * { font-size: " + sz_val + " !important; }\n"
             if lineh:
