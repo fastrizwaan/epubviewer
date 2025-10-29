@@ -1603,20 +1603,102 @@ class EPubViewer(Adw.ApplicationWindow):
             # after creating self.webview (inside __init__), add:
             try:
                 def _on_load_changed(webview, load_event):
+                    print(f"🔄 load-changed event: {load_event}")
                     # WebKit2.LoadEvent.FINISHED is enum; use numeric check to be safe
                     try:
                         # 3 == FINISHED in many WebKit builds; do robust check if WebKit.LoadEvent exists
                         finished = False
                         try:
                             finished = (load_event == getattr(self.WebKit, 'LoadEvent').FINISHED)
-                        except Exception:
+                            print(f"  ✓ Checked via LoadEvent.FINISHED: {finished}")
+                        except Exception as e:
+                            print(f"  ⚠ LoadEvent check failed: {e}")
                             finished = (int(load_event) == 3)
+                            print(f"  ✓ Checked via int==3: {finished}, load_event={load_event}")
+                        
+                        print(f"  → finished = {finished}")
+                        
                         if finished:
                             # install observer and reapply user settings after page is ready
                             self._install_persistent_user_style()
                             self._reapply_user_font_override()
-                    except Exception:
-                        pass
+                            
+                            print("📊 Page load finished, running font detection...")
+                            
+                            # Log the EPUB's original font and font-size
+                            js_detect_font = """
+                            console.log('🔤 Starting font detection...');
+                            setTimeout(function() {
+                                console.log('🔤 Font detection timer fired');
+                                try {
+                                    var content = document.querySelector('.ebook-content') || document.body;
+                                    console.log('🔤 Content element found:', content ? 'YES' : 'NO');
+                                    if (content) {
+                                        console.log('=== EPUB FONT INFO ===');
+                                        
+                                        // Check container
+                                        var style = window.getComputedStyle(content);
+                                        console.log('Container (.ebook-content):');
+                                        console.log('  Font Family: ' + style.fontFamily);
+                                        console.log('  Font Size: ' + style.fontSize);
+                                        
+                                        // Check various text elements
+                                        var elements = [
+                                            {selector: 'p', name: 'Paragraph <p>'},
+                                            {selector: 'div', name: 'Div <div>'},
+                                            {selector: 'span', name: 'Span <span>'},
+                                            {selector: 'h1, h2, h3, h4, h5, h6', name: 'Heading'},
+                                            {selector: '.body, .bodytext, .text', name: 'Body class'}
+                                        ];
+                                        
+                                        var fontSizes = {};
+                                        
+                                        elements.forEach(function(el) {
+                                            var elem = content.querySelector(el.selector);
+                                            if (elem) {
+                                                var s = window.getComputedStyle(elem);
+                                                var size = s.fontSize;
+                                                var family = s.fontFamily;
+                                                console.log(el.name + ':');
+                                                console.log('  Font: ' + family);
+                                                console.log('  Size: ' + size);
+                                                
+                                                // Track unique sizes
+                                                if (!fontSizes[size]) {
+                                                    fontSizes[size] = [];
+                                                }
+                                                fontSizes[size].push(el.name);
+                                            }
+                                        });
+                                        
+                                        // Show summary of sizes
+                                        console.log('---');
+                                        console.log('Font sizes found:');
+                                        Object.keys(fontSizes).sort().forEach(function(size) {
+                                            console.log('  ' + size + ': ' + fontSizes[size].join(', '));
+                                        });
+                                        
+                                        console.log('======================');
+                                    }
+                                } catch(e) {
+                                    console.log('❌ Error detecting font: ' + e.message);
+                                }
+                            }, 200);
+                            """
+                            try:
+                                webview.evaluate_javascript(js_detect_font, -1, None, None, None, None, None)
+                                print("✓ Font detection JS executed via evaluate_javascript")
+                            except Exception as e:
+                                print(f"⚠ evaluate_javascript failed: {e}")
+                                try:
+                                    webview.run_javascript(js_detect_font, None, None, None)
+                                    print("✓ Font detection JS executed via run_javascript")
+                                except Exception as e2:
+                                    print(f"❌ run_javascript also failed: {e2}")
+                    except Exception as e:
+                        print(f"❌ Exception in load-changed handler: {e}")
+                        import traceback
+                        traceback.print_exc()
                     return False
                 # connect if available
                 if getattr(self, "webview", None) and getattr(self.webview, "connect", None):
@@ -2053,33 +2135,35 @@ class EPubViewer(Adw.ApplicationWindow):
             return
         fam = getattr(self, "user_font_family", None)
         sz  = getattr(self, "user_font_size", None)
+        size_val = (str(sz)+'pt') if sz else None
+        
         js = f"""
         (function(){{
           try{{
             if(window.__apply_user_font_settings) {{
-              window.__apply_user_font_settings({json.dumps(fam)}, {json.dumps((str(sz)+'pt') if sz else None)});
+              window.__apply_user_font_settings({json.dumps(fam)}, {json.dumps(size_val)});
               return true;
             }}
           }}catch(e){{ }}
           // fallback: (re)install persistent helper then apply
-          { _escape_js_for_injection("""(function(){
-              try {
-                window.__user_font_settings = window.__user_font_settings || {family:null,size:null};
-                window.__user_font_settings.family = %s;
-                window.__user_font_settings.size = %s;
+          (function(){{
+              try {{
+                window.__user_font_settings = window.__user_font_settings || {{family:null,size:null}};
+                window.__user_font_settings.family = {json.dumps(fam)};
+                window.__user_font_settings.size = {json.dumps(size_val)};
                 var s = document.getElementById('userFontOverride');
-                if(!s){ s = document.createElement('style'); s.id='userFontOverride'; document.head.appendChild(s); }
+                if(!s){{ s = document.createElement('style'); s.id='userFontOverride'; document.head.appendChild(s); }}
                 var fam = window.__user_font_settings.family || '';
                 var sz = window.__user_font_settings.size || '';
                 var css = '';
-                if(fam) css += "body, .ebook-content { font-family: '" + fam.replace(/'/g,"\\\\'") + "' !important; }\\n";
-                if(sz) css += "body, .ebook-content { font-size: " + sz + " !important; }\\n";
-                if(fam) css += ".ebook-content * { font-family: '" + fam.replace(/'/g,"\\\\'") + "' !important; }\\n";
-                if(sz) css += ".ebook-content * { font-size: " + sz + " !important; }\\n";
+                if(fam) css += "body, .ebook-content {{ font-family: '" + fam.replace(/'/g,"\\\\'") + "' !important; }}\\n";
+                if(sz) css += "body, .ebook-content {{ font-size: " + sz + " !important; }}\\n";
+                if(fam) css += ".ebook-content * {{ font-family: '" + fam.replace(/'/g,"\\\\'") + "' !important; }}\\n";
+                if(sz) css += ".ebook-content * {{ font-size: " + sz + " !important; }}\\n";
                 s.textContent = css;
                 return true;
-              } catch(e){ return false; }
-          })();""" % (json.dumps(fam), json.dumps((str(sz)+'pt') if sz else None)) ) }
+              }} catch(e){{ return false; }}
+          }})();
         }})();
         """
         try:
