@@ -1932,8 +1932,7 @@ class EPubViewer(Adw.ApplicationWindow):
             css += `.ebook-content * {{ font-family: '{font_name}' !important; }}`;
           }}
           if({json.dumps(size_pt)} !== null) {{
-            css += `body, .ebook-content {{ font-size: {size_pt}pt !important; }}`;
-            css += `.ebook-content * {{ font-size: {size_pt}pt !important; }}`;
+            css += `html, body, .ebook-content {{ font-size: {size_pt}pt !important; }}`;
           }}
           style.textContent = css;
         }})();"""
@@ -1944,7 +1943,7 @@ class EPubViewer(Adw.ApplicationWindow):
             except Exception: pass
 
     def setup_font_dropdown(self):
-        """Create font family dropdown and apply chosen family globally via injected CSS."""
+        """Create font family dropdown with no selection marks and improved font handling."""
         try:
             font_map = PangoCairo.FontMap.get_default()
             families = font_map.list_families()
@@ -1963,7 +1962,9 @@ class EPubViewer(Adw.ApplicationWindow):
             # button factory (display)
             button_factory = Gtk.SignalListItemFactory()
             def setup_button(factory, li):
-                lbl = Gtk.Label(); lbl.set_ellipsize(Pango.EllipsizeMode.END); lbl.set_xalign(0)
+                lbl = Gtk.Label()
+                lbl.set_ellipsize(Pango.EllipsizeMode.END)
+                lbl.set_xalign(0)
                 li.set_child(lbl)
             def bind_button(factory, li):
                 pos = li.get_position()
@@ -1976,7 +1977,9 @@ class EPubViewer(Adw.ApplicationWindow):
             # list factory (popup)
             list_factory = Gtk.SignalListItemFactory()
             def setup_list(factory, li):
-                lbl = Gtk.Label(); lbl.set_xalign(0); li.set_child(lbl)
+                lbl = Gtk.Label()
+                lbl.set_xalign(0)
+                li.set_child(lbl)
             def bind_list(factory, li):
                 pos = li.get_position()
                 li.get_child().set_text(font_names.get_string(pos))
@@ -1985,66 +1988,91 @@ class EPubViewer(Adw.ApplicationWindow):
             self.font_dropdown.set_list_factory(list_factory)
 
             if font_names.get_n_items() > 0:
-                # keep previous selection if exists, or default to sans-serif
                 try:
                     cur = getattr(self, "user_font_family", None)
                     if cur and cur in names:
                         idx = names.index(cur)
                     else:
-                        # Try to find "sans-serif" or a font with "Sans" in the name
+                        # Default to a good reading font
                         idx = 0
                         for i, name in enumerate(names):
-                            if "sans-serif" in name.lower() or "sans" in name.lower():
+                            if "serif" in name.lower() and "sans" not in name.lower():
                                 idx = i
                                 break
                     self.font_dropdown.set_selected(idx)
                 except Exception:
                     self.font_dropdown.set_selected(0)
 
-            def _on_font_notify(dd, prop):
+            def _on_font_activate(dd, prop):
+                """Handler that applies font family changes with proper heading sizes."""
                 try:
                     sel = dd.get_selected_item()
-                    if not sel: return
+                    if not sel: 
+                        return
+                    
                     name = sel.get_string()
-                    # store locally on instance
                     self.user_font_family = name
-                    # JS: store settings and update style#userFontOverride with both family & size
+                    
+                    # Apply font family via JavaScript with full heading support
                     js = f"""
                     (function(){{
                       try {{
+                        console.log('Applying font family: {name}');
+                        
                         window.__user_font_settings = window.__user_font_settings || {{family: null, size: null}};
                         window.__user_font_settings.family = {json.dumps(name)};
-                        var s = document.getElementById('userFontOverride');
-                        if(!s) {{
-                          s = document.createElement('style');
-                          s.id = 'userFontOverride';
-                          document.head.appendChild(s);
+                        
+                        var styleEl = document.getElementById('userFontOverride');
+                        if(!styleEl) {{
+                          styleEl = document.createElement('style');
+                          styleEl.id = 'userFontOverride';
+                          document.head.appendChild(styleEl);
                         }}
-                        var fam = window.__user_font_settings.family ? window.__user_font_settings.family : '';
-                        var sz = window.__user_font_settings.size ? window.__user_font_settings.size : '';
+                        
+                        var fam = window.__user_font_settings.family || '';
+                        var sz = window.__user_font_settings.size || '';
                         var css = '';
+                        
                         if(fam) {{
-                          css += "body, .ebook-content {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "' !important; }}\\n";
-                          css += ".ebook-content * {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "' !important; }}\\n";
+                          css += `body, .ebook-content {{ font-family: '${{fam.replace(/'/g, "\\\\'")}}' !important; }}\\n`;
+                          css += `.ebook-content * {{ font-family: '${{fam.replace(/'/g, "\\\\'")}}' !important; }}\\n`;
                         }}
+                        
                         if(sz) {{
-                          css += "body, .ebook-content {{ font-size: " + sz + " !important; }}\\n";
-                          css += ".ebook-content * {{ font-size: " + sz + " !important; }}\\n";
+                          var baseFontSize = parseFloat(sz);
+                          css += `html, body, .ebook-content {{ font-size: ${{sz}} !important; }}\\n`;
+                          css += `.ebook-content h1 {{ font-size: ${{baseFontSize * 2.0}}pt !important; }}\\n`;
+                          css += `.ebook-content h2 {{ font-size: ${{baseFontSize * 1.7}}pt !important; }}\\n`;
+                          css += `.ebook-content h3 {{ font-size: ${{baseFontSize * 1.4}}pt !important; }}\\n`;
+                          css += `.ebook-content h4 {{ font-size: ${{baseFontSize * 1.2}}pt !important; }}\\n`;
+                          css += `.ebook-content h5 {{ font-size: ${{baseFontSize * 1.1}}pt !important; }}\\n`;
+                          css += `.ebook-content h6 {{ font-size: ${{baseFontSize}}pt !important; }}\\n`;
+                          css += `.ebook-content p, .ebook-content div, .ebook-content span {{ font-size: ${{baseFontSize}}pt !important; }}\\n`;
+                          css += `.ebook-content li {{ font-size: ${{baseFontSize}}pt !important; }}\\n`;
+                          css += `.ebook-content td, .ebook-content th {{ font-size: ${{baseFontSize}}pt !important; }}\\n`;
                         }}
-                        s.textContent = css;
-                      }} catch(e){{ console.log('apply-font-error', e); }}
+                        
+                        styleEl.textContent = css;
+                        console.log('Font family applied successfully');
+                      }} catch(e) {{ 
+                        console.log('Error applying font:', e); 
+                      }}
                     }})();
                     """
+                    
                     try:
                         self.webview.evaluate_javascript(js, -1, None, None, None, None, None)
                     except Exception:
-                        try: self.webview.run_javascript(js, None, None, None)
-                        except Exception: pass
-                except Exception:
-                    pass
+                        try: 
+                            self.webview.run_javascript(js, None, None, None)
+                        except Exception: 
+                            pass
+                            
+                except Exception as e:
+                    print(f"Font family change error: {e}")
 
             # connect
-            self.font_handler_id = self.font_dropdown.connect("notify::selected", _on_font_notify)
+            self.font_handler_id = self.font_dropdown.connect("notify::selected", _on_font_activate)
         except Exception as e:
             print("setup_font_dropdown error:", e)
 
@@ -2079,7 +2107,7 @@ class EPubViewer(Adw.ApplicationWindow):
               var sz  = window.__user_font_settings.size || '';
               var css = '';
               if(fam) css += "body, .ebook-content { font-family: '" + fam.replace(/'/g,"\\'") + "' !important; }\\n";
-              if(sz)  css += "body, .ebook-content { font-size: " + sz + " !important; }\\n";
+              if(sz)  css += "html, body, .ebook-content { font-size: " + sz + " !important; }\\n";
               // also apply to common selectors inside EPUB (increase specificity)
               if(fam) css += ".ebook-content * { font-family: '" + fam.replace(/'/g,"\\'") + "' !important; }\\n";
               s.textContent = css;
@@ -2157,9 +2185,8 @@ class EPubViewer(Adw.ApplicationWindow):
                 var sz = window.__user_font_settings.size || '';
                 var css = '';
                 if(fam) css += "body, .ebook-content {{ font-family: '" + fam.replace(/'/g,"\\\\'") + "' !important; }}\\n";
-                if(sz) css += "body, .ebook-content {{ font-size: " + sz + " !important; }}\\n";
+                if(sz) css += "html, body, .ebook-content {{ font-size: " + sz + " !important; }}\\n";
                 if(fam) css += ".ebook-content * {{ font-family: '" + fam.replace(/'/g,"\\\\'") + "' !important; }}\\n";
-                if(sz) css += ".ebook-content * {{ font-size: " + sz + " !important; }}\\n";
                 s.textContent = css;
                 return true;
               }} catch(e){{ return false; }}
@@ -2178,71 +2205,125 @@ class EPubViewer(Adw.ApplicationWindow):
             pass
 
     def setup_font_size_dropdown(self):
-        """Create font size dropdown (pt) and apply chosen size globally via injected CSS."""
+        """Create font size dropdown with standard sizes and improved CSS application."""
         try:
-            sizes = [6,7,8,9,10,11,12,13,14,15,16,18,20,22,24,26,28,32,36,40,48,54,60]
+            # Standard font sizes (pt) with better range
+            sizes = [8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 26, 28, 32, 36, 40, 48]
             sl = Gtk.StringList()
             for s in sizes:
-                sl.append(str(s))
+                sl.append(f"{s} pt")  # Show "pt" in dropdown for clarity
+            
             self.font_size_dropdown = Gtk.DropDown()
             self.font_size_dropdown.set_tooltip_text("Font Size")
             self.font_size_dropdown.set_focus_on_click(False)
             self.font_size_dropdown.set_model(sl)
-            self.font_size_dropdown.set_size_request(65, -1)
+            self.font_size_dropdown.set_size_request(80, -1)
 
-            # default try to reuse previous selection
+            # Set default size (15pt is a good reading size)
             try:
-                cur_sz = getattr(self, "user_font_size", 15)  # default to 15
-                if cur_sz and str(cur_sz) in [str(x) for x in sizes]:
+                cur_sz = getattr(self, "user_font_size", 15)
+                if cur_sz and int(cur_sz) in sizes:
                     idx = sizes.index(int(cur_sz))
                 else:
-                    idx = sizes.index(15) if 15 in sizes else 0
+                    idx = sizes.index(15) if 15 in sizes else 6  # Default to 15pt
             except Exception:
-                idx = sizes.index(15) if 15 in sizes else 0
+                idx = 6  # Fallback to 15pt (index 6 in our list)
+            
             self.font_size_dropdown.set_selected(idx)
 
-            def _on_size_notify(dd, prop):
+            def _on_size_activate(dd, prop):
+                """Handler that applies font size changes with proper heading scale."""
                 try:
                     sel = dd.get_selected_item()
-                    if not sel: return
-                    size_pt = sel.get_string()
-                    # normalize to "12pt"
-                    size_val = f"{size_pt}pt"
+                    if not sel: 
+                        return
+                    
+                    # Parse size from "X pt" format
+                    size_str = sel.get_string()
+                    size_pt = int(size_str.split()[0])  # Extract number from "X pt"
+                    
+                    # Store the size
                     self.user_font_size = size_pt
+                    
+                    # Apply via JavaScript with comprehensive CSS that handles all text elements
                     js = f"""
                     (function(){{
                       try {{
+                        console.log('Applying font size: {size_pt}pt');
+                        
+                        // Store settings globally
                         window.__user_font_settings = window.__user_font_settings || {{family: null, size: null}};
-                        window.__user_font_settings.size = {json.dumps(size_val)};
-                        var s = document.getElementById('userFontOverride');
-                        if(!s) {{
-                          s = document.createElement('style');
-                          s.id = 'userFontOverride';
-                          document.head.appendChild(s);
+                        window.__user_font_settings.size = '{size_pt}pt';
+                        
+                        // Get or create the override style element
+                        var styleEl = document.getElementById('userFontOverride');
+                        if(!styleEl) {{
+                          styleEl = document.createElement('style');
+                          styleEl.id = 'userFontOverride';
+                          document.head.appendChild(styleEl);
                         }}
-                        var fam = window.__user_font_settings.family ? window.__user_font_settings.family : '';
-                        var sz = window.__user_font_settings.size ? window.__user_font_settings.size : '';
+                        
+                        // Build comprehensive CSS
+                        var fam = window.__user_font_settings.family || '';
+                        var baseFontSize = {size_pt};
+                        
                         var css = '';
+                        
+                        // Set base font size on html and body
+                        css += `html, body {{ font-size: ${{baseFontSize}}pt !important; }}\\n`;
+                        css += `.ebook-content {{ font-size: ${{baseFontSize}}pt !important; }}\\n`;
+                        
+                        // Standard heading sizes (relative to base)
+                        // These multipliers create a proper type scale
+                        css += `.ebook-content h1 {{ font-size: ${{baseFontSize * 2.0}}pt !important; }}\\n`;
+                        css += `.ebook-content h2 {{ font-size: ${{baseFontSize * 1.7}}pt !important; }}\\n`;
+                        css += `.ebook-content h3 {{ font-size: ${{baseFontSize * 1.4}}pt !important; }}\\n`;
+                        css += `.ebook-content h4 {{ font-size: ${{baseFontSize * 1.2}}pt !important; }}\\n`;
+                        css += `.ebook-content h5 {{ font-size: ${{baseFontSize * 1.1}}pt !important; }}\\n`;
+                        css += `.ebook-content h6 {{ font-size: ${{baseFontSize}}pt !important; }}\\n`;
+                        
+                        // Body text elements
+                        css += `.ebook-content p, .ebook-content div, .ebook-content span {{ font-size: ${{baseFontSize}}pt !important; }}\\n`;
+                        css += `.ebook-content li {{ font-size: ${{baseFontSize}}pt !important; }}\\n`;
+                        css += `.ebook-content td, .ebook-content th {{ font-size: ${{baseFontSize}}pt !important; }}\\n`;
+                        
+                        // Special text elements
+                        css += `.ebook-content blockquote {{ font-size: ${{baseFontSize * 0.95}}pt !important; }}\\n`;
+                        css += `.ebook-content code, .ebook-content pre {{ font-size: ${{baseFontSize * 0.9}}pt !important; }}\\n`;
+                        css += `.ebook-content small {{ font-size: ${{baseFontSize * 0.85}}pt !important; }}\\n`;
+                        css += `.ebook-content sup, .ebook-content sub {{ font-size: ${{baseFontSize * 0.75}}pt !important; }}\\n`;
+                        
+                        // Add font family if set
                         if(fam) {{
-                          css += "body, .ebook-content {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "' !important; }}\\n";
-                          css += ".ebook-content * {{ font-family: '" + fam.replace(/'/g, "\\\\'") + "' !important; }}\\n";
+                          css += `body, .ebook-content {{ font-family: '${{fam.replace(/'/g, "\\\\'")}}' !important; }}\\n`;
+                          css += `.ebook-content * {{ font-family: '${{fam.replace(/'/g, "\\\\'")}}' !important; }}\\n`;
                         }}
-                        if(sz) {{
-                          css += "body, .ebook-content {{ font-size: " + sz + " !important; }}\\n";
-                          css += ".ebook-content * {{ font-size: " + sz + " !important; }}\\n";
-                        }}
-                        s.textContent = css;
-                      }} catch(e){{ console.log('apply-font-size-error', e); }}
-                    }})();"""
+                        
+                        // Apply the CSS
+                        styleEl.textContent = css;
+                        
+                        console.log('Font size applied successfully');
+                      }} catch(e) {{ 
+                        console.log('Error applying font size:', e); 
+                      }}
+                    }})();
+                    """
+                    
+                    # Execute the JavaScript
                     try:
                         self.webview.evaluate_javascript(js, -1, None, None, None, None, None)
                     except Exception:
-                        try: self.webview.run_javascript(js, None, None, None)
-                        except Exception: pass
-                except Exception:
-                    pass
+                        try: 
+                            self.webview.run_javascript(js, None, None, None)
+                        except Exception as e:
+                            print(f"Error executing font size JS: {e}")
+                    
+                except Exception as e:
+                    print(f"Font size change error: {e}")
 
-            self.font_size_handler_id = self.font_size_dropdown.connect("notify::selected", _on_size_notify)
+            # Connect the signal
+            self.font_size_handler_id = self.font_size_dropdown.connect("notify::selected", _on_size_activate)
+            
         except Exception as e:
             print("setup_font_size_dropdown error:", e)
 
@@ -3927,9 +4008,8 @@ class EPubViewer(Adw.ApplicationWindow):
                     padding: 0;
                     height: 100vh;
                     overflow: hidden;
-                    /* Default fallback if epub has no font specified */
+                    /* Default fallback font-family if epub has no font specified */
                     font-family: sans-serif;
-                    font-size: 12pt;
                 }}
                 .ebook-content {{
                     {col_decl}
@@ -3982,32 +4062,62 @@ class EPubViewer(Adw.ApplicationWindow):
             extra = ""
             fam = getattr(self, "user_font_family", None)
             sz  = getattr(self, "user_font_size", None)
+            
+            # Parse font size
             if sz:
                 try:
                     if isinstance(sz, (int, float)):
-                        sz_val = f"{sz}pt"
+                        base_size = float(sz)
                     else:
-                        s = str(sz)
-                        sz_val = s if s.strip().endswith("pt") else (s + "pt")
+                        s = str(sz).replace("pt", "").strip()
+                        base_size = float(s)
                 except Exception:
-                    sz_val = str(sz)
+                    base_size = 15.0  # Default
             else:
-                sz_val = None
+                base_size = None
 
             lineh = getattr(self, "user_line_height", None)
             justify = getattr(self, "user_justify", None)
 
+            # Apply font family
             if fam:
                 safe_fam = str(fam).replace("'", "\\'")
-                extra += ".ebook-content, .ebook-content * { font-family: '" + safe_fam + "' !important; }\n"
-            if sz_val:
-                extra += ".ebook-content, .ebook-content * { font-size: " + sz_val + " !important; }\n"
+                extra += f"body, .ebook-content {{ font-family: '{safe_fam}' !important; }}\n"
+                extra += f".ebook-content * {{ font-family: '{safe_fam}' !important; }}\n"
+            
+            # Apply font size with standard heading scale
+            if base_size:
+                # Base size for body text
+                extra += f"html, body, .ebook-content {{ font-size: {base_size}pt !important; }}\n"
+                
+                # Standard heading sizes (proper typographic scale)
+                extra += f".ebook-content h1 {{ font-size: {base_size * 2.0}pt !important; }}\n"
+                extra += f".ebook-content h2 {{ font-size: {base_size * 1.7}pt !important; }}\n"
+                extra += f".ebook-content h3 {{ font-size: {base_size * 1.4}pt !important; }}\n"
+                extra += f".ebook-content h4 {{ font-size: {base_size * 1.2}pt !important; }}\n"
+                extra += f".ebook-content h5 {{ font-size: {base_size * 1.1}pt !important; }}\n"
+                extra += f".ebook-content h6 {{ font-size: {base_size}pt !important; }}\n"
+                
+                # Body text elements
+                extra += f".ebook-content p, .ebook-content div, .ebook-content span {{ font-size: {base_size}pt !important; }}\n"
+                extra += f".ebook-content li {{ font-size: {base_size}pt !important; }}\n"
+                extra += f".ebook-content td, .ebook-content th {{ font-size: {base_size}pt !important; }}\n"
+                
+                # Special elements
+                extra += f".ebook-content blockquote {{ font-size: {base_size * 0.95}pt !important; }}\n"
+                extra += f".ebook-content code, .ebook-content pre {{ font-size: {base_size * 0.9}pt !important; }}\n"
+                extra += f".ebook-content small {{ font-size: {base_size * 0.85}pt !important; }}\n"
+                extra += f".ebook-content sup, .ebook-content sub {{ font-size: {base_size * 0.75}pt !important; }}\n"
+            
+            # Apply line height
             if lineh:
                 try:
                     lh = float(lineh)
-                    extra += ".ebook-content { line-height: " + ("{:.2f}".format(lh)) + " !important; }\n"
+                    extra += f".ebook-content {{ line-height: {lh:.2f} !important; }}\n"
                 except Exception:
                     pass
+            
+            # Apply justification
             if justify:
                 if justify == "none":
                     extra += ".ebook-content { text-align: left !important; -webkit-hyphens: none !important; hyphens: none !important; }\n"
