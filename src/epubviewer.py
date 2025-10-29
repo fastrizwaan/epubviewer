@@ -33,9 +33,28 @@ os.makedirs(COVERS_DIR, exist_ok=True)
 # persistent cover saved size (bigger so library shows large covers)
 LIB_COVER_W, LIB_COVER_H = 200, 300
 
+# Book settings directory
+BOOK_SETTINGS_DIR = os.path.join(LIBRARY_DIR, "book_settings")
+
+# Default settings for reader
+DEFAULT_SETTINGS = {
+    "column_width_px": 300,
+    "column_gap": 50,
+    "user_font_family": None,
+    "user_font_size": None,
+    "user_justify": "full",
+    "user_line_height": 1.50,
+    "page_margin_top": 50,
+    "page_margin_right": 50,
+    "page_margin_bottom": 50,
+    "page_margin_left": 50,
+    "margins_linked": True,
+}
+
 def _ensure_library_dir():  
     os.makedirs(LIBRARY_DIR, exist_ok=True)
     os.makedirs(COVERS_DIR, exist_ok=True)
+    os.makedirs(BOOK_SETTINGS_DIR, exist_ok=True)
 
 def load_library():
     _ensure_library_dir()
@@ -54,6 +73,38 @@ def save_library(data):
             json.dump(data, fh, indent=2, ensure_ascii=False)
     except Exception as e:
         print("Error saving library:", e)
+
+def _get_book_settings_file(book_path):
+    """Get the settings file path for a specific book."""
+    if not book_path:
+        return None
+    _ensure_library_dir()
+    # Create a hash of the book path for the filename
+    book_hash = hashlib.sha1(book_path.encode("utf-8")).hexdigest()[:16]
+    return os.path.join(BOOK_SETTINGS_DIR, f"{book_hash}.json")
+
+def save_book_settings(book_path, settings):
+    """Save settings for a specific book."""
+    settings_file = _get_book_settings_file(book_path)
+    if not settings_file:
+        return
+    try:
+        with open(settings_file, "w", encoding="utf-8") as fh:
+            json.dump(settings, fh, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"Error saving book settings: {e}")
+
+def load_book_settings(book_path):
+    """Load settings for a specific book. Returns None if not found."""
+    settings_file = _get_book_settings_file(book_path)
+    if not settings_file or not os.path.exists(settings_file):
+        return None
+    try:
+        with open(settings_file, "r", encoding="utf-8") as fh:
+            return json.load(fh)
+    except Exception as e:
+        print(f"Error loading book settings: {e}")
+        return None
 
 # CSS (short) - removed unsupported text-align properties
 _css = """
@@ -1111,13 +1162,14 @@ class EPubViewer(Adw.ApplicationWindow):
         self.book_path = None
 
         # NEW: column settings - only width-based mode
-        self.column_width_px = 300           # 50..500 px
-        self._column_gap = 50                # px gap between columns
+        self.column_width_px = DEFAULT_SETTINGS["column_width_px"]
+        self._column_gap = DEFAULT_SETTINGS["column_gap"]
         
         # Font and text settings defaults
-        # No default font size - use epub's original fonts
-        self.user_justify = "full"           # default justification
-        self.user_line_height = 1.50         # default line height
+        self.user_font_family = DEFAULT_SETTINGS["user_font_family"]
+        self.user_font_size = DEFAULT_SETTINGS["user_font_size"]
+        self.user_justify = DEFAULT_SETTINGS["user_justify"]
+        self.user_line_height = DEFAULT_SETTINGS["user_line_height"]
 
         
         # library
@@ -1316,6 +1368,11 @@ class EPubViewer(Adw.ApplicationWindow):
                 elif s == "Full": val = "full"
                 else: val = "hyphen"
                 self.user_justify = val
+                
+                # Save settings after justify change
+                if hasattr(self, 'book_path') and self.book_path:
+                    self._save_book_settings()
+                
                 # rebuild page so overrides are re-injected
                 self.display_page()
             except Exception:
@@ -1330,6 +1387,11 @@ class EPubViewer(Adw.ApplicationWindow):
         def on_lh_changed(spin):
             try:
                 self.user_line_height = round(float(spin.get_value()), 2)
+                
+                # Save settings after line height change
+                if hasattr(self, 'book_path') and self.book_path:
+                    self._save_book_settings()
+                
                 self.display_page()
             except Exception:
                 pass
@@ -1403,6 +1465,11 @@ class EPubViewer(Adw.ApplicationWindow):
                     _apply_margins_to_attrs({"top": new, "right": new, "bottom": new, "left": new})
                 else:
                     setattr(self, f"page_margin_{side}", new)
+                
+                # Save settings after margin change
+                if hasattr(self, 'book_path') and self.book_path:
+                    self._save_book_settings()
+                
                 # rebuild page so new padding is used
                 try:
                     self.display_page()
@@ -1433,6 +1500,11 @@ class EPubViewer(Adw.ApplicationWindow):
         self.link_margins_chk.set_active(getattr(self, "_margins_linked", True))
         def on_link_toggled(cb):
             self._margins_linked = cb.get_active()
+            
+            # Save settings after link toggle
+            if hasattr(self, 'book_path') and self.book_path:
+                self._save_book_settings()
+            
             if self._margins_linked:
                 # sync all to top value
                 topv = int(self.margin_top_spin.get_value())
@@ -1457,6 +1529,18 @@ class EPubViewer(Adw.ApplicationWindow):
 
         # append to your font box (or appropriate container)
         font_box.append(m_row)
+        
+        # Add Reset to Defaults button
+        reset_btn_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        reset_btn_box.set_margin_top(12)
+        reset_btn_box.set_halign(Gtk.Align.CENTER)
+        reset_btn = Gtk.Button(label="Reset to Defaults")
+        reset_btn.add_css_class("destructive-action")
+        reset_btn.set_tooltip_text("Reset all reader settings to defaults")
+        reset_btn.connect("clicked", lambda b: self._reset_to_defaults())
+        reset_btn_box.append(reset_btn)
+        font_box.append(reset_btn_box)
+        
         sidebar_box.append(self.side_stack)
 
 
@@ -1948,8 +2032,14 @@ class EPubViewer(Adw.ApplicationWindow):
             font_map = PangoCairo.FontMap.get_default()
             families = font_map.list_families()
             font_names = Gtk.StringList()
-            names = sorted([f.get_name() for f in families])
-            for n in names:
+            
+            # Add "EPUB Default" as first option
+            font_names.append("EPUB Default")
+            names = ["EPUB Default"] + sorted([f.get_name() for f in families])
+            self.font_names = names  # Store for later use
+            
+            # Add system fonts
+            for n in names[1:]:  # Skip the first one since we already added it
                 font_names.append(n)
 
             self.font_dropdown = Gtk.DropDown()
@@ -1993,12 +2083,8 @@ class EPubViewer(Adw.ApplicationWindow):
                     if cur and cur in names:
                         idx = names.index(cur)
                     else:
-                        # Default to a good reading font
+                        # Default to "EPUB Default" (index 0)
                         idx = 0
-                        for i, name in enumerate(names):
-                            if "serif" in name.lower() and "sans" not in name.lower():
-                                idx = i
-                                break
                     self.font_dropdown.set_selected(idx)
                 except Exception:
                     self.font_dropdown.set_selected(0)
@@ -2011,7 +2097,68 @@ class EPubViewer(Adw.ApplicationWindow):
                         return
                     
                     name = sel.get_string()
+                    
+                    # Handle "EPUB Default" selection - clear custom font
+                    if name == "EPUB Default":
+                        self.user_font_family = None
+                        
+                        # Save settings after font change
+                        if hasattr(self, 'book_path') and self.book_path:
+                            self._save_book_settings()
+                        
+                        # Clear custom font styling - remove the override style
+                        js = """
+                        (function(){
+                          try {
+                            console.log('Clearing custom font - using EPUB default');
+                            
+                            window.__user_font_settings = window.__user_font_settings || {family: null, size: null};
+                            window.__user_font_settings.family = null;
+                            
+                            var styleEl = document.getElementById('userFontOverride');
+                            if(styleEl) {
+                              // Keep size if set, but remove font-family
+                              var sz = window.__user_font_settings.size || '';
+                              var css = '';
+                              
+                              if(sz) {
+                                var baseFontSize = parseFloat(sz);
+                                css += `html, body, .ebook-content { font-size: ${sz} !important; }\\n`;
+                                css += `.ebook-content h1 { font-size: ${baseFontSize * 2.0}pt !important; }\\n`;
+                                css += `.ebook-content h2 { font-size: ${baseFontSize * 1.7}pt !important; }\\n`;
+                                css += `.ebook-content h3 { font-size: ${baseFontSize * 1.4}pt !important; }\\n`;
+                                css += `.ebook-content h4 { font-size: ${baseFontSize * 1.2}pt !important; }\\n`;
+                                css += `.ebook-content h5 { font-size: ${baseFontSize * 1.1}pt !important; }\\n`;
+                                css += `.ebook-content h6 { font-size: ${baseFontSize}pt !important; }\\n`;
+                                css += `.ebook-content p, .ebook-content div, .ebook-content span { font-size: ${baseFontSize}pt !important; }\\n`;
+                                css += `.ebook-content li { font-size: ${baseFontSize}pt !important; }\\n`;
+                                css += `.ebook-content td, .ebook-content th { font-size: ${baseFontSize}pt !important; }\\n`;
+                              }
+                              
+                              styleEl.textContent = css;
+                            }
+                            console.log('Font cleared - using EPUB default');
+                          } catch(e) { 
+                            console.log('Error clearing font:', e); 
+                          }
+                        })();
+                        """
+                        
+                        try:
+                            self.webview.evaluate_javascript(js, -1, None, None, None, None, None)
+                        except Exception:
+                            try: 
+                                self.webview.run_javascript(js, None, None, None)
+                            except Exception: 
+                                pass
+                        return
+                    
+                    # Regular font selected
                     self.user_font_family = name
+                    
+                    # Save settings after font change
+                    if hasattr(self, 'book_path') and self.book_path:
+                        self._save_book_settings()
                     
                     # Apply font family via JavaScript with full heading support
                     js = f"""
@@ -2208,26 +2355,29 @@ class EPubViewer(Adw.ApplicationWindow):
         """Create font size dropdown with standard sizes and improved CSS application."""
         try:
             # Standard font sizes (pt) with better range
-            sizes = [8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 26, 28, 32, 36, 40, 48]
+            sizes = ["Default", 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 26, 28, 32, 36, 40, 48]
             sl = Gtk.StringList()
             for s in sizes:
-                sl.append(f"{s} pt")  # Show "pt" in dropdown for clarity
+                if s == "Default":
+                    sl.append("EPUB Default")
+                else:
+                    sl.append(f"{s} pt")  # Show "pt" in dropdown for clarity
             
             self.font_size_dropdown = Gtk.DropDown()
             self.font_size_dropdown.set_tooltip_text("Font Size")
             self.font_size_dropdown.set_focus_on_click(False)
             self.font_size_dropdown.set_model(sl)
-            self.font_size_dropdown.set_size_request(80, -1)
+            self.font_size_dropdown.set_size_request(110, -1)
 
-            # Set default size (15pt is a good reading size)
+            # Set default size
             try:
-                cur_sz = getattr(self, "user_font_size", 15)
-                if cur_sz and int(cur_sz) in sizes:
+                cur_sz = getattr(self, "user_font_size", None)
+                if cur_sz and int(cur_sz) in sizes[1:]:  # Skip "Default" in comparison
                     idx = sizes.index(int(cur_sz))
                 else:
-                    idx = sizes.index(15) if 15 in sizes else 6  # Default to 15pt
+                    idx = 0  # Default to "EPUB Default"
             except Exception:
-                idx = 6  # Fallback to 15pt (index 6 in our list)
+                idx = 0  # Fallback to "EPUB Default"
             
             self.font_size_dropdown.set_selected(idx)
 
@@ -2238,12 +2388,64 @@ class EPubViewer(Adw.ApplicationWindow):
                     if not sel: 
                         return
                     
-                    # Parse size from "X pt" format
+                    # Parse size from dropdown
                     size_str = sel.get_string()
+                    
+                    # Handle "EPUB Default" selection - clear custom font size
+                    if size_str == "EPUB Default":
+                        self.user_font_size = None
+                        
+                        # Save settings after font size change
+                        if hasattr(self, 'book_path') and self.book_path:
+                            self._save_book_settings()
+                        
+                        # Clear custom font size styling - remove the size override
+                        js = """
+                        (function(){
+                          try {
+                            console.log('Clearing custom font size - using EPUB default');
+                            
+                            window.__user_font_settings = window.__user_font_settings || {family: null, size: null};
+                            window.__user_font_settings.size = null;
+                            
+                            var styleEl = document.getElementById('userFontOverride');
+                            if(styleEl) {
+                              // Keep family if set, but remove font-size
+                              var fam = window.__user_font_settings.family || '';
+                              var css = '';
+                              
+                              if(fam) {
+                                css += `body, .ebook-content { font-family: '${fam.replace(/'/g, "\\\\'")}' !important; }\\n`;
+                                css += `.ebook-content * { font-family: '${fam.replace(/'/g, "\\\\'")}' !important; }\\n`;
+                              }
+                              
+                              styleEl.textContent = css;
+                            }
+                            console.log('Font size cleared - using EPUB default');
+                          } catch(e) { 
+                            console.log('Error clearing font size:', e); 
+                          }
+                        })();
+                        """
+                        
+                        try:
+                            self.webview.evaluate_javascript(js, -1, None, None, None, None, None)
+                        except Exception:
+                            try: 
+                                self.webview.run_javascript(js, None, None, None)
+                            except Exception: 
+                                pass
+                        return
+                    
+                    # Regular size selected - parse from "X pt" format
                     size_pt = int(size_str.split()[0])  # Extract number from "X pt"
                     
                     # Store the size
                     self.user_font_size = size_pt
+                    
+                    # Save settings after font size change
+                    if hasattr(self, 'book_path') and self.book_path:
+                        self._save_book_settings()
                     
                     # Apply via JavaScript with comprehensive CSS that handles all text elements
                     js = f"""
@@ -3207,6 +3409,10 @@ class EPubViewer(Adw.ApplicationWindow):
         self.column_width_px = max(50, min(1000, w))
         print(f"✓ Set column width to {self.column_width_px}px")
         
+        # Save settings after column width change
+        if hasattr(self, 'book_path') and self.book_path:
+            self._save_book_settings()
+        
         # Update CSS via JavaScript instead of reloading page
         try:
             if self.book and self.items:
@@ -3731,6 +3937,11 @@ class EPubViewer(Adw.ApplicationWindow):
         def on_gap_changed(spin):
             try:
                 self._column_gap = int(spin.get_value())
+                
+                # Save settings after gap change
+                if hasattr(self, 'book_path') and self.book_path:
+                    self._save_book_settings()
+                
                 # Use JS update instead of full page reload
                 if self.book and self.items:
                     self._update_column_css_via_js()
@@ -3998,14 +4209,10 @@ class EPubViewer(Adw.ApplicationWindow):
             padding_decl = f"padding: {mt}px {mr}px {mb}px {ml}px;"
 
             # Always enable both scroll directions - JavaScript will manage based on actual column count
-            # light sepia like color background: #e5e0dd;
-            # Old magazine #fbfcee
-            # newspaper #e1e1e1
             col_rules = f"""
                 html {{
                     height: 100vh;
                     overflow: hidden;
-                    background: @theme_bg;                    
                 }}
                 body {{
                     margin: 0;
@@ -4933,14 +5140,23 @@ class EPubViewer(Adw.ApplicationWindow):
             except Exception: pass
 
             if resume:
+                # Load saved settings for this book
+                loaded_settings = self._load_book_settings()
+                
                 if isinstance(resume_index, int) and 0 <= resume_index < len(self.items):
                     self.current_index = resume_index
                 else:
-                    for e in self.library:
-                        if e.get("path") == path:
-                            self.current_index = int(e.get("index", 0)) if isinstance(e.get("index", 0), int) else 0
-                            break
+                    # Get index from loaded settings or library
+                    if loaded_settings and "current_index" in loaded_settings:
+                        self.current_index = int(loaded_settings.get("current_index", 0))
+                    else:
+                        for e in self.library:
+                            if e.get("path") == path:
+                                self.current_index = int(e.get("index", 0)) if isinstance(e.get("index", 0), int) else 0
+                                break
             else:
+                # Reset to defaults for new book
+                self._reset_to_defaults()
                 self.current_index = 0
             self.update_navigation(); self.display_page()
             self._update_library_entry()
@@ -5683,6 +5899,179 @@ class EPubViewer(Adw.ApplicationWindow):
         if len(self.library) > 200: self.library = self.library[-200:]
         save_library(self.library)
 
+    def _save_book_settings(self):
+        """Save current reader settings for the current book."""
+        if not self.book_path:
+            return
+        
+        settings = {
+            "column_width_px": getattr(self, "column_width_px", DEFAULT_SETTINGS["column_width_px"]),
+            "column_gap": getattr(self, "_column_gap", DEFAULT_SETTINGS["column_gap"]),
+            "user_font_family": getattr(self, "user_font_family", DEFAULT_SETTINGS["user_font_family"]),
+            "user_font_size": getattr(self, "user_font_size", DEFAULT_SETTINGS["user_font_size"]),
+            "user_justify": getattr(self, "user_justify", DEFAULT_SETTINGS["user_justify"]),
+            "user_line_height": getattr(self, "user_line_height", DEFAULT_SETTINGS["user_line_height"]),
+            "page_margin_top": getattr(self, "page_margin_top", DEFAULT_SETTINGS["page_margin_top"]),
+            "page_margin_right": getattr(self, "page_margin_right", DEFAULT_SETTINGS["page_margin_right"]),
+            "page_margin_bottom": getattr(self, "page_margin_bottom", DEFAULT_SETTINGS["page_margin_bottom"]),
+            "page_margin_left": getattr(self, "page_margin_left", DEFAULT_SETTINGS["page_margin_left"]),
+            "margins_linked": getattr(self, "_margins_linked", DEFAULT_SETTINGS["margins_linked"]),
+            "current_index": int(self.current_index),
+            "progress": float(self.progress.get_fraction() or 0.0) if hasattr(self, 'progress') else 0.0,
+        }
+        save_book_settings(self.book_path, settings)
+    
+    def _load_book_settings(self):
+        """Load and apply settings for the current book."""
+        if not self.book_path:
+            return None
+        
+        settings = load_book_settings(self.book_path)
+        if not settings:
+            return None
+        
+        # Apply settings
+        self.column_width_px = settings.get("column_width_px", DEFAULT_SETTINGS["column_width_px"])
+        self._column_gap = settings.get("column_gap", DEFAULT_SETTINGS["column_gap"])
+        self.user_font_family = settings.get("user_font_family", DEFAULT_SETTINGS["user_font_family"])
+        self.user_font_size = settings.get("user_font_size", DEFAULT_SETTINGS["user_font_size"])
+        self.user_justify = settings.get("user_justify", DEFAULT_SETTINGS["user_justify"])
+        self.user_line_height = settings.get("user_line_height", DEFAULT_SETTINGS["user_line_height"])
+        self.page_margin_top = settings.get("page_margin_top", DEFAULT_SETTINGS["page_margin_top"])
+        self.page_margin_right = settings.get("page_margin_right", DEFAULT_SETTINGS["page_margin_right"])
+        self.page_margin_bottom = settings.get("page_margin_bottom", DEFAULT_SETTINGS["page_margin_bottom"])
+        self.page_margin_left = settings.get("page_margin_left", DEFAULT_SETTINGS["page_margin_left"])
+        self._margins_linked = settings.get("margins_linked", DEFAULT_SETTINGS["margins_linked"])
+        
+        # Update UI controls
+        self._update_ui_from_settings()
+        
+        return settings
+    
+    def _reset_to_defaults(self):
+        """Reset all reader settings to defaults."""
+        self.column_width_px = DEFAULT_SETTINGS["column_width_px"]
+        self._column_gap = DEFAULT_SETTINGS["column_gap"]
+        self.user_font_family = DEFAULT_SETTINGS["user_font_family"]
+        self.user_font_size = DEFAULT_SETTINGS["user_font_size"]
+        self.user_justify = DEFAULT_SETTINGS["user_justify"]
+        self.user_line_height = DEFAULT_SETTINGS["user_line_height"]
+        self.page_margin_top = DEFAULT_SETTINGS["page_margin_top"]
+        self.page_margin_right = DEFAULT_SETTINGS["page_margin_right"]
+        self.page_margin_bottom = DEFAULT_SETTINGS["page_margin_bottom"]
+        self.page_margin_left = DEFAULT_SETTINGS["page_margin_left"]
+        self._margins_linked = DEFAULT_SETTINGS["margins_linked"]
+        
+        # Update UI controls
+        self._update_ui_from_settings()
+        
+        # Save the defaults for this book
+        if self.book_path:
+            self._save_book_settings()
+        
+        # Refresh the display
+        if hasattr(self, 'items') and self.items:
+            self.display_page()
+    
+    def _update_ui_from_settings(self):
+        """Update UI controls to reflect current settings."""
+        try:
+            # Update column width slider if it exists
+            if hasattr(self, 'column_width_slider'):
+                self.column_width_slider.set_value(self.column_width_px)
+            
+            # Update column gap slider if it exists
+            if hasattr(self, 'gap_slider'):
+                self.gap_slider.set_value(self._column_gap)
+            
+            # Update font dropdown
+            if hasattr(self, 'font_dropdown'):
+                self._update_font_dropdown_selection()
+            
+            # Update font size dropdown
+            if hasattr(self, 'font_size_dropdown'):
+                sizes = ["Default", 8, 9, 10, 11, 12, 13, 14, 15, 16, 18, 20, 22, 24, 26, 28, 32, 36, 40, 48]
+                try:
+                    if self.user_font_size is None:
+                        # Select "EPUB Default" (index 0)
+                        self.font_size_dropdown.set_selected(0)
+                    elif int(self.user_font_size) in sizes[1:]:  # Skip "Default" in comparison
+                        idx = sizes.index(int(self.user_font_size))
+                        self.font_size_dropdown.set_selected(idx)
+                    else:
+                        self.font_size_dropdown.set_selected(0)  # Fallback to EPUB Default
+                except Exception:
+                    self.font_size_dropdown.set_selected(0)
+            
+            # Update justify dropdown
+            if hasattr(self, 'justify_dropdown'):
+                justify_map = {"none": 0, "full": 1, "hyphen": 2}
+                idx = justify_map.get(self.user_justify, 1)
+                self.justify_dropdown.set_selected(idx)
+            
+            # Update line height spinner
+            if hasattr(self, 'line_height_spin'):
+                self.line_height_spin.set_value(self.user_line_height)
+            
+            # Update margin spinners
+            if hasattr(self, 'margin_top_spin'):
+                self.margin_top_spin.set_value(self.page_margin_top)
+            if hasattr(self, 'margin_right_spin'):
+                self.margin_right_spin.set_value(self.page_margin_right)
+            if hasattr(self, 'margin_bottom_spin'):
+                self.margin_bottom_spin.set_value(self.page_margin_bottom)
+            if hasattr(self, 'margin_left_spin'):
+                self.margin_left_spin.set_value(self.page_margin_left)
+            
+            # Update link margins checkbox
+            if hasattr(self, 'link_margins_chk'):
+                self.link_margins_chk.set_active(self._margins_linked)
+        except Exception as e:
+            print(f"Error updating UI from settings: {e}")
+    
+    def _update_font_dropdown_selection(self):
+        """Update font dropdown to show current font in use."""
+        try:
+            if not hasattr(self, 'font_dropdown') or not hasattr(self, 'font_names'):
+                return
+            
+            current_font = self.user_font_family
+            
+            # If no custom font set, select "EPUB Default"
+            if not current_font:
+                self.font_dropdown.set_selected(0)  # "EPUB Default" is at index 0
+                return
+            
+            # Find and select the font in the dropdown
+            for i, font_name in enumerate(self.font_names):
+                if font_name.lower() == current_font.lower():
+                    self.font_dropdown.set_selected(i)
+                    return
+            
+            # If not found, default to "EPUB Default"
+            self.font_dropdown.set_selected(0)
+        except Exception as e:
+            print(f"Error updating font dropdown: {e}")
+    
+    def _detect_epub_font(self):
+        """Try to detect the font family used in the epub's CSS."""
+        try:
+            if not self.css_content:
+                return None
+            
+            # Simple regex to find font-family declarations
+            import re
+            matches = re.findall(r'font-family:\s*([^;]+)', self.css_content, re.IGNORECASE)
+            if matches:
+                # Take the first font from the first declaration
+                fonts = matches[0].split(',')
+                if fonts:
+                    font = fonts[0].strip().strip('"').strip("'")
+                    return font
+        except Exception:
+            pass
+        return None
+
     def _save_progress_for_library(self):
         if not self.book_path: return
         changed = False
@@ -5691,6 +6080,8 @@ class EPubViewer(Adw.ApplicationWindow):
                 e["index"] = int(self.current_index); e["progress"] = float(self.progress.get_fraction() or 0.0)
                 changed = True; break
         if changed: save_library(self.library)
+        # Also save book settings
+        self._save_book_settings()
 
     def _open_parent_folder(self, path):
         try:
