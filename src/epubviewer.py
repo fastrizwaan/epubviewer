@@ -3998,10 +3998,14 @@ class EPubViewer(Adw.ApplicationWindow):
             padding_decl = f"padding: {mt}px {mr}px {mb}px {ml}px;"
 
             # Always enable both scroll directions - JavaScript will manage based on actual column count
+            # light sepia like color background: #e5e0dd;
+            # Old magazine #fbfcee
+            # newspaper #e1e1e1
             col_rules = f"""
                 html {{
                     height: 100vh;
                     overflow: hidden;
+                    background: @theme_bg;                    
                 }}
                 body {{
                     margin: 0;
