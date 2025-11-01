@@ -97,39 +97,45 @@ test_themes = {
     "Grass": ("#242d17", "#d7dbbd"),
     "Cherry": ("#4e1609", "#f0d1d5"),
     "Sky": ("#262d48", "#cedef5"),
-    "Solarized": ("#586e75", "#fdf6e3"),
     "Green": ("#111111", "#8acf00"),
+    "Solarized": ("#002b36", "#fdf6e3"),
+    "Turmeric": ("#28282c", "#FFcf00"),
+    "Green": ("#28282c", "#8acf00"),
+    "Green2": ("#8acf00", "#004b01")
+
 }
+
 #############
 
-pg_bg = "#cedef5" # Sky
-pg_bg = "#e0e0e0" # Gray
-pg_bg = "#FFcf00" # Mango icecream
-pg_bg = "#f1e8d0" # Sepia
-pg_bg = "#dedbd7" # gtk4
-pg_bg = "#8acf00" # Green
+page_bg = "#e0e0e0" # Gray
+page_bg = "#f1e8d0" # Sepia
+page_bg = "#dedbd7" # gtk4
+page_bg = "#fdf6e3" # Solarized
+page_bg = "#cedef5" # Sky
+page_bg = "#FFcf00" # Turmeric
+page_bg = "#8acf00" # Green
+text_fg = "#28282c" # 004b01 (green dark)
 
-txt_fg = "#111111"
-sidebar_bg = darken(pg_bg, 0.95)
+sidebar_bg = darken(page_bg, 0.9)
 print(sidebar_bg)
 
-pg_bg_light = pg_bg
-txt_fg_light = txt_fg
-pg_bg_dark = darken(txt_fg)
-sidebar_bg_dark = darken(pg_bg_dark)
-txt_fg_dark = darken(pg_bg)
+page_bg_light = page_bg
+text_fg_light = text_fg
+page_bg_dark = darken(text_fg, 0.9)
+sidebar_bg_dark = darken(page_bg_dark, 1.3)
+text_fg_dark = darken(page_bg,0.8)
 
 
 # CSS (short) - removed unsupported text-align properties
 # --- Light theme CSS ---
 _CSS_LIGHT = f"""
 .pg-bg {{
-  background-color: {pg_bg};
-  color: {txt_fg};
+  background-color: {page_bg};
+  color: {text_fg};
 }}
 .epub-sidebar {{
   background-color: {sidebar_bg};
-  color: {txt_fg};
+  color: {text_fg};
 }}
 .epub-sidebar .adw-action-row:hover {{
   background-color: rgba(0,0,0,0.06);
@@ -152,12 +158,12 @@ _CSS_LIGHT = f"""
 # --- Dark theme CSS ---
 _CSS_DARK = f"""
 .pg-bg {{
-  background-color: {pg_bg_dark};
+  background-color: {page_bg_dark};
   color: #000000;
 }}
 .epub-sidebar {{
   background-color: {sidebar_bg_dark};
-  color: {txt_fg_dark};
+  color: {text_fg_dark};
 }}
 .epub-sidebar .adw-action-row:hover {{
   background-color: rgba(255,255,255,0.1);
@@ -269,7 +275,7 @@ _dark_provider = Gtk.CssProvider()
 _dark_provider.load_from_data(_dark_override_css.encode("utf-8"))
 settings = Gtk.Settings.get_default()
 def _update_gtk_dark_provider(settings, pspec=None):
-    global pg_bg, txt_fg  # Declare at function level
+    global page_bg, text_fg  # Declare at function level
 
     try:
         display = Gdk.Display.get_default()
@@ -301,12 +307,12 @@ def _update_gtk_dark_provider(settings, pspec=None):
             )
 
             # Update global variables (no need to redeclare global here)
-            pg_bg = pg_bg_dark
-            txt_fg = txt_fg_dark
+            page_bg = page_bg_dark
+            text_fg = text_fg_dark
 
             print("🌙 Dark theme active")
-            print("pg_bg:", pg_bg)
-            print("txt_fg:", txt_fg)
+            print("page_bg:", page_bg)
+            print("text_fg:", text_fg)
 
         else:
             Gtk.StyleContext.add_provider_for_display(
@@ -319,12 +325,12 @@ def _update_gtk_dark_provider(settings, pspec=None):
             )
 
             # Reset to light theme colors
-            pg_bg = pg_bg_light  # Sepia
-            txt_fg = txt_fg_light
+            page_bg = page_bg_light  # Sepia
+            text_fg = text_fg_light
 
             print("☀️ Light theme active")
-            print("pg_bg:", pg_bg)
-            print("txt_fg:", txt_fg)
+            print("page_bg:", page_bg)
+            print("text_fg:", text_fg)
 
         # --- Notify WebKit view (if present) ---
         app = Adw.Application.get_default()
@@ -4117,7 +4123,7 @@ class EPubViewer(Adw.ApplicationWindow):
             
                 
     def _wrap_html(self, raw_html, base_uri):
-        global pg_bg, txt_fg
+        global page_bg, text_fg
         """
         Wrap EPUB HTML and inject user overrides: font, size, line-height, justification,
         column gap and page margins so they persist across rebuilds.
@@ -4149,8 +4155,8 @@ class EPubViewer(Adw.ApplicationWindow):
                 html {{
                     height: 100vh;
                     overflow: hidden;
-                    background: {pg_bg};     
-                    color: {txt_fg};
+                    background: {page_bg};     
+                    color: {text_fg};
                 }}
                 body {{
                     margin: 0;
@@ -4757,8 +4763,8 @@ class EPubViewer(Adw.ApplicationWindow):
             (function() {{
                 const html = document.documentElement;
                 const body = document.body;
-                if (html) html.style.background = "{pg_bg}";
-                if (body) body.style.color = "{txt_fg}";
+                if (html) html.style.background = "{page_bg}";
+                if (body) body.style.color = "{text_fg}";
                 return "theme_updated";
             }})();
         """
