@@ -100,9 +100,11 @@ test_themes = {
     "Green": ("#111111", "#8acf00"),
     "Solarized": ("#002b36", "#fdf6e3"),
     "Turmeric": ("#28282c", "#FFcf00"),
+    "Purple Gold":("#451843", "#FFcf00"),
     "Green": ("#28282c", "#8acf00"),
-    "Green2": ("#8acf00", "#004b01")
-
+    "Green2": ("#8acf00", "#004b01"),
+    "Blue Yellow": ("#fbfc33", "#010745"),
+    "Blue Black": ("#050505", "#71cfef"),
 }
 
 #############
@@ -114,7 +116,9 @@ page_bg = "#fdf6e3" # Solarized
 page_bg = "#cedef5" # Sky
 page_bg = "#FFcf00" # Turmeric
 page_bg = "#8acf00" # Green
-text_fg = "#28282c" # 004b01 (green dark)
+page_bg = "#FFcf00" # Blue Yellow
+
+text_fg = "#451843" # 004b01 (green dark)
 
 sidebar_bg = darken(page_bg, 0.9)
 print(sidebar_bg)
