@@ -90,52 +90,16 @@ def invert_color(hex_color: str, preserve_luminance: bool = True) -> str:
     return f"#{r:02x}{g:02x}{b:02x}"
 
 ##############
-# Theme, text color, background color
-themes = {
-    "Sepia": ("#5b4636", "#f1e8d0"),
-    "Gray": ("#222222", "#e0e0e0"),
-    "Grass": ("#242d17", "#d7dbbd"),
-    "Cherry": ("#4e1609", "#f0d1d5"),
-    "Sky": ("#262d48", "#cedef5"),
-    "Green": ("#111111", "#8acf00"),
-    "Solarized": ("#002b36", "#fdf6e3"),
-    "Turmeric": ("#28282c", "#FFcf00"),
-    "Purple Gold":("#451843", "#FFcf00"),
-    "Green": ("#28282c", "#8acf00"),
-    "Green2": ("#8acf00", "#004b01"),
-    "Blue Yellow": ("#010745", "#fbfc33"),
-    "Blue Black": ("#050505", "#71cfef"),
-}
-
-#############
-
-
-# Pick a theme name
-theme_name = "Sepia"
-
-# Safely extract
-text_fg, page_bg = themes.get(theme_name, ("#000000", "#FFFFFF"))
-
-sidebar_bg = darken(page_bg, 0.9)
-print(sidebar_bg)
-
-page_bg_light = page_bg
-text_fg_light = text_fg
-page_bg_dark = darken(text_fg, 0.9)
-sidebar_bg_dark = darken(page_bg_dark, 1.3)
-text_fg_dark = darken(page_bg,0.8)
-
 
 # CSS (short) - removed unsupported text-align properties
 # --- Light theme CSS ---
 _CSS_LIGHT = f"""
 .pg-bg {{
-  background-color: {page_bg};
-  color: {text_fg};
+  background-color: @theme_bg;
+  color: @theme_fg;
 }}
 .epub-sidebar {{
-  background-color: {sidebar_bg};
-  color: {text_fg};
+  background-color: rgba(0,0,0,0.12);
 }}
 .epub-sidebar .adw-action-row:hover {{
   background-color: rgba(0,0,0,0.06);
@@ -158,12 +122,12 @@ _CSS_LIGHT = f"""
 # --- Dark theme CSS ---
 _CSS_DARK = f"""
 .pg-bg {{
-  background-color: {page_bg_dark};
-  color: #000000;
+  background-color: @theme_bg;
+  color: @theme_fg;
 }}
 .epub-sidebar {{
-  background-color: {sidebar_bg_dark};
-  color: {text_fg_dark};
+  background-color: rgba(0,0,0,0.12);
+
 }}
 .epub-sidebar .adw-action-row:hover {{
   background-color: rgba(255,255,255,0.1);
@@ -306,14 +270,6 @@ def _update_gtk_dark_provider(settings, pspec=None):
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2,
             )
 
-            # Update global variables (no need to redeclare global here)
-            page_bg = page_bg_dark
-            text_fg = text_fg_dark
-
-            print("🌙 Dark theme active")
-            print("page_bg:", page_bg)
-            print("text_fg:", text_fg)
-
         else:
             Gtk.StyleContext.add_provider_for_display(
                 display, _css_light_provider,
@@ -324,13 +280,6 @@ def _update_gtk_dark_provider(settings, pspec=None):
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1,
             )
 
-            # Reset to light theme colors
-            page_bg = page_bg_light  # Sepia
-            text_fg = text_fg_light
-
-            print("☀️ Light theme active")
-            print("page_bg:", page_bg)
-            print("text_fg:", text_fg)
 
         # --- Notify WebKit view (if present) ---
         app = Adw.Application.get_default()
@@ -1707,9 +1656,11 @@ class EPubViewer(Adw.ApplicationWindow):
         }
 
         theme_menu = Gio.Menu()
+        theme_menu.append("Default", "app.set-theme('Default')")
         for name in self.themes.keys():
             theme_menu.append(name, f"app.set-theme('{name}')")
         menu_model.append_submenu("Theme", theme_menu)
+
 
         # --- About and other items ---
         menu_model.append("About", "app.about")
@@ -1949,130 +1900,105 @@ class EPubViewer(Adw.ApplicationWindow):
         except Exception as e:
             print(f"[JS Error] Could not read message: {e}")
 
+    def on_set_theme(self, action, parameter):
+        theme_name = parameter.get_string()
+        win = self.props.active_window
+        if win and hasattr(win, "apply_theme"):
+            win.apply_theme(theme_name)
+            
     def apply_theme(self, theme_name):
-        """Apply a theme by name, regenerating all CSS providers"""
-        global text_fg, page_bg, sidebar_bg, page_bg_light, text_fg_light
-        global page_bg_dark, sidebar_bg_dark, text_fg_dark
+        global text_fg, page_bg
+        global page_bg_light, text_fg_light, page_bg_dark, text_fg_dark
+        global sidebar_bg, sidebar_bg_dark
         global _css_light_provider, _css_dark_provider
-        
-        # Get theme colors
-        text_fg, page_bg = self.themes.get(theme_name, ("#000000", "#FFFFFF"))
-        
-        # Calculate derived colors
-        sidebar_bg = darken(page_bg, 0.9)
-        page_bg_light = page_bg
-        text_fg_light = text_fg
-        page_bg_dark = darken(text_fg, 0.9)
-        sidebar_bg_dark = darken(page_bg_dark, 1.3)
-        text_fg_dark = darken(page_bg, 0.8)
-        
-        # Regenerate light theme CSS
-        css_light = f"""
-            .pg-bg {{
-            background-color: {page_bg};
-            color: {text_fg};
-            }}
-            .epub-sidebar {{
-            background-color: {sidebar_bg};
-            color: {text_fg};
-            }}
-            .epub-sidebar .adw-action-row:hover {{
-            background-color: rgba(0,0,0,0.06);
-            }}
-            .epub-sidebar .adw-action-row.selected {{
-            background-color: rgba(0,0,0,0.12);
-            }}
-            .epub-sidebar .adw-action-row {{
-            background-color: #f1f2e5;
-            }}
-            .book-title {{
-            font-weight: 600;
-            }}
-            .book-author {{
-            color: rgba(0,0,0,0.6);
-            font-size: 12px;
-            }}
-            """
-                    # Regenerate dark theme CSS
-        css_dark = f"""
-            .pg-bg {{
-            background-color: {page_bg_dark};
-            color: #000000;
-            }}
-            .epub-sidebar {{
-            background-color: {sidebar_bg_dark};
-            color: {text_fg_dark};
-            }}
-            .epub-sidebar .adw-action-row:hover {{
-            background-color: rgba(255,255,255,0.1);
-            }}
-            .epub-sidebar .adw-action-row.selected {{
-            background-color: rgba(255,255,255,0.15);
-            }}
-            .epub-sidebar .adw-action-row {{
-            background-color: rgba(255,255,255,0.08);
-            }}
-            .book-title {{
-            font-weight: 600;
-            }}
-            .book-author {{
-            color: rgba(255,255,255,0.7);
-            font-size: 12px;
-            }}
-            """
-        
-        # Update CSS providers
-        _css_light_provider = Gtk.CssProvider()
-        _css_light_provider.load_from_data(css_light.encode())
-        
-        _css_dark_provider = Gtk.CssProvider()
-        _css_dark_provider.load_from_data(css_dark.encode())
-        
-        # Remove old providers and add new ones
-        display = Gdk.Display.get_default()
-        settings = Gtk.Settings.get_default()
-        prefer_dark = settings.get_property("gtk-application-prefer-dark-theme")
 
-        # Add appropriate provider based on system theme
-        if prefer_dark:
-            Gtk.StyleContext.add_provider_for_display(
-                display, _css_dark_provider,
-                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-            )
-            Gtk.StyleContext.add_provider_for_display(
-                display, _hover_dark_provider,
-                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1
-            )
-            Gtk.StyleContext.add_provider_for_display(
-                display, _dark_provider,
-                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2
-            )
+        style_manager = Adw.StyleManager.get_default()
 
-            # Update global variables (no need to redeclare global here)
-            page_bg = page_bg_dark
-            text_fg = text_fg_dark
-                                
-        else:
-            Gtk.StyleContext.add_provider_for_display(
-                display, _css_light_provider,
-                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION
-            )
-            Gtk.StyleContext.add_provider_for_display(
-                display, _hover_light_provider,
-                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1
-            )
-            # Reset to light theme colors
-            page_bg = page_bg_light  # Sepia
+        if theme_name == "Default":
+            print("🎨 Resetting to default Libadwaita theme")
+            style_manager.set_color_scheme(Adw.ColorScheme.DEFAULT)
+
+            page_bg_light = "var(--view-bg-color)"
+            text_fg_light = "var(--view-fg-color)"
+            page_bg_dark = "var(--view-bg-color)"
+            text_fg_dark = "var(--view-fg-color)"
+            sidebar_bg = "var(--sidebar-bg-color)"
+            sidebar_bg_dark = "var(--sidebar-bg-color)"
+
+            # concrete fallback for WebView JS
+            page_bg = page_bg_light
             text_fg = text_fg_light
 
-        # Update webview if present
-        if hasattr(self, 'webview') and self.webview:
-            try:
-                self.update_webview_theme() # Refresh the current page with new colors
-            except:
-                pass
-        
+        else:
+            text_fg, page_bg = self.themes.get(theme_name, ("#000000", "#FFFFFF"))
+
+            # Respect current dark preference
+            is_dark = style_manager.get_dark()
+
+            page_bg_light = page_bg
+            text_fg_light = text_fg
+            page_bg_dark = darken(page_bg, 0.8)
+            text_fg_dark = darken(text_fg, 0.9)
+            sidebar_bg = darken(page_bg, 0.9)
+            sidebar_bg_dark = darken(page_bg_dark, 1.3)
+
+            if is_dark:
+                style_manager.set_color_scheme(Adw.ColorScheme.FORCE_DARK)
+            else:
+                style_manager.set_color_scheme(Adw.ColorScheme.FORCE_LIGHT)
+
+        print(f"""
+        ##### apply_theme #############
+        sidebar_bg      = {sidebar_bg}
+        page_bg_light   = {page_bg_light}
+        text_fg_light   = {text_fg_light}
+        page_bg_dark    = {page_bg_dark}
+        sidebar_bg_dark = {sidebar_bg_dark}
+        text_fg_dark    = {text_fg_dark}
+        page_bg         = {page_bg}
+        text_fg         = {text_fg}
+        """)
+
+        css_light = f"""
+            .pg-bg {{
+                background-color: {page_bg};
+                color: {text_fg};
+            }}
+            .epub-sidebar {{
+                background-color: {sidebar_bg};
+                color: {text_fg};
+            }}
+        """
+        css_dark = f"""
+            .pg-bg {{
+                background-color: {page_bg_dark};
+                color: {text_fg_dark};
+            }}
+            .epub-sidebar {{
+                background-color: {sidebar_bg_dark};
+                color: {text_fg_dark};
+            }}
+        """
+
+        _css_light_provider = Gtk.CssProvider()
+        _css_light_provider.load_from_data(css_light.encode())
+        _css_dark_provider = Gtk.CssProvider()
+        _css_dark_provider.load_from_data(css_dark.encode())
+
+        display = Gdk.Display.get_default()
+        is_dark = style_manager.get_dark()
+
+        Gtk.StyleContext.add_provider_for_display(
+            display,
+            _css_dark_provider if is_dark else _css_light_provider,
+            Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
+        )
+
+        if hasattr(self, "update_webview_theme"):
+            self.update_webview_theme()
+
         print(f"✓ Theme '{theme_name}' applied: fg={text_fg}, bg={page_bg}")
+
 
     # ---------- minimal TTS control methods ----------
     def _update_tts_button_states(self):
@@ -4311,12 +4237,19 @@ class EPubViewer(Adw.ApplicationWindow):
             # light sepia like color background: #e5e0dd;
             # Old magazine #fbfcee
             # newspaper #e1e1e1
+            print(f"""
+            ################## from WRAP_HTML ####################
+            page_bg = {page_bg}
+            text_fg = {text_fg}
+            """)
+            
             col_rules = f"""
                 html {{
                     height: 100vh;
                     overflow: hidden;
                     background: {page_bg};     
                     color: {text_fg};
+                    ttransition: background 0.80s;
                 }}
                 body {{
                     margin: 0;
@@ -5025,39 +4958,70 @@ class EPubViewer(Adw.ApplicationWindow):
         return wrapped
 
     def update_webview_theme(self):
+        global page_bg, text_fg
+        global page_bg_light, text_fg_light, page_bg_dark, text_fg_dark
+
+        style_manager = Adw.StyleManager.get_default()
+        is_dark = style_manager.get_dark()
+
+        if is_dark:
+            page_bg = page_bg_dark
+            text_fg = text_fg_dark
+        else:
+            page_bg = page_bg_light
+            text_fg = text_fg_light
+
+        print(f"""
+        ##### update_webview_theme #############
+        Dark mode: {is_dark}
+        page_bg_light   = {page_bg_light}
+        text_fg_light   = {text_fg_light}
+        page_bg_dark    = {page_bg_dark}
+        text_fg_dark    = {text_fg_dark}
+        Using page_bg   = {page_bg}
+        Using text_fg   = {text_fg}
+        """)
+
+        if not getattr(self, "webview", None):
+            return
+
         js = f"""
             (function() {{
                 const html = document.documentElement;
                 const body = document.body;
-                if (html) html.style.background = "{page_bg}";
-                if (body) body.style.color = "{text_fg}";
+                if (html) {{
+                    html.style.background = "{page_bg}";
+                    html.style.color = "{text_fg}";
+                }}
+                if (body) {{
+                    body.style.background = "{page_bg}";
+                    body.style.color = "{text_fg}";
+                }}
+                const ec = document.querySelector('.ebook-content');
+                if (ec) {{
+                    ec.style.background = "{page_bg}";
+                    ec.style.color = "{text_fg}";
+                }}
                 return "theme_updated";
             }})();
         """
 
-        if not hasattr(self, "webview") or not self.webview:
-            return
-
         def _on_js_finished(webview, result, user_data=None):
             try:
                 webview.evaluate_javascript_finish(result)
-                print("✅ WebView theme update: completed")
+                print("✅ WebView theme updated (live, correct colors)")
             except Exception as e:
                 print("⚠️ JS eval failed:", e)
 
         try:
-            # Fixed: proper parameter order for evaluate_javascript
             self.webview.evaluate_javascript(
-                js,                  # script
-                -1,                  # length (-1 = null-terminated)
-                None,                # world_name
-                None,                # source_uri
-                None,                # cancellable (MUST be None or Gio.Cancellable)
-                _on_js_finished,     # callback
-                None                 # user_data
+                js, -1, None, None, None,
+                _on_js_finished, None
             )
         except Exception as e:
             print("❌ Failed to inject theme JS:", e)
+
+
 
     # ---- file dialog ----
     def open_file(self, *_):
