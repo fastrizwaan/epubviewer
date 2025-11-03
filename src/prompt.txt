@@ -1,0 +1,9 @@
+bookmarks, need fixing:
+1. allow multiple bookmarks for each chapter or whole book (unlimited)
+2. use text a full sentence or text size of 30 words at least so that we can track it 
+3. using column position is not the right way, perhaps use advanced html position or something to properly track>
+Also add annotation, when we right click on some text in the epub, and show 'add note' and show many colored buttons to highlight that selection. like in a standard ebook reader.bookmarks, need fixing:
+1. allow multiple bookmarks for each chapter or whole book (unlimited)
+2. use text a full sentence or text size of 30 words at least so that we can track it 
+3. using column position is not the right way, perhaps use advanced html position or something to properly track>
+Also add annotation feature working, when we right click on some text in the epub, and show 'add note' and show many colored buttons to highlight that selection. like in a standard ebook reader. make it save and loadable and allow unlimited annotations and bookmarks.
