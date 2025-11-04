@@ -1648,6 +1648,7 @@ class EPubViewer(Adw.ApplicationWindow):
             "Sky": ("#262d48", "#cedef5"),
             "Green": ("#111111", "#8acf00"),
             "Solarized": ("#002b36", "#fdf6e3"),
+            "Nord":("#2e3440", "#d8dee9"),
             "Turmeric": ("#28282c", "#FFcf00"),
             "Purple Gold": ("#451843", "#FFcf00"),
             "Green2": ("#004b01", "#8acf00"),
@@ -1656,6 +1657,7 @@ class EPubViewer(Adw.ApplicationWindow):
         }
 
         theme_menu = Gio.Menu()
+        theme_menu.append("Default", "app.set-theme('Default')")
         for name in self.themes.keys():
             theme_menu.append(name, f"app.set-theme('{name}')")
         menu_model.append_submenu("Theme", theme_menu)
@@ -1907,26 +1909,45 @@ class EPubViewer(Adw.ApplicationWindow):
         # Get theme colors
         text_fg, page_bg = self.themes.get(theme_name, ("#000000", "#FFFFFF"))
         
-        # Calculate derived colors
-        sidebar_bg = darken(page_bg, 0.9)
-        page_bg_light = page_bg
-        text_fg_light = text_fg
-        page_bg_dark = darken(text_fg, 0.9)
-        sidebar_bg_dark = darken(page_bg_dark, 1.3)
-        text_fg_dark = darken(page_bg, 0.8)
-        
-        print(f"""
-        ##### apply theme #############
-        sidebar_bg      = {sidebar_bg}
-        page_bg_light   = {page_bg_light}
-        text_fg_light   = {text_fg_light}
-        page_bg_dark    = {page_bg_dark}
-        sidebar_bg_dark = {sidebar_bg_dark}
-        text_fg_dark    = {text_fg_dark}
 
-        page_bg         = {page_bg}
-        text_fg         = {text_fg}        
-        """)
+        if theme_name == "Default":
+            print("🎨 Resetting to default Libadwaita theme")
+            style_manager = Adw.StyleManager.get_default()
+            style_manager.set_color_scheme(Adw.ColorScheme.DEFAULT)
+          
+
+            page_bg_light = "rgb(255,255,255)"
+            text_fg_light = "rgba(0,0,6,0.8)"
+            page_bg_dark = "rgb(29,29,32)"
+            text_fg_dark = "#f0f0f0"
+            sidebar_bg_dark = "rgb(46,46,50)"
+
+
+            sidebar_bg = "rgb(235,235,237)"
+            
+
+        else:
+                                
+            # Calculate derived colors
+            sidebar_bg = darken(page_bg, 0.9)
+            page_bg_light = page_bg
+            text_fg_light = text_fg
+            page_bg_dark = darken(text_fg, 0.9)
+            sidebar_bg_dark = darken(page_bg_dark, 1.3)
+            text_fg_dark = darken(page_bg, 0.8)
+            
+            print(f"""
+            ##### apply theme #############
+            sidebar_bg      = {sidebar_bg}
+            page_bg_light   = {page_bg_light}
+            text_fg_light   = {text_fg_light}
+            page_bg_dark    = {page_bg_dark}
+            sidebar_bg_dark = {sidebar_bg_dark}
+            text_fg_dark    = {text_fg_dark}
+
+            page_bg         = {page_bg}
+            text_fg         = {text_fg}        
+            """)
 
         
         # Regenerate light theme CSS
@@ -2012,9 +2033,20 @@ class EPubViewer(Adw.ApplicationWindow):
             )
 
             # Update global variables (no need to redeclare global here)
-            page_bg = page_bg_dark
-            text_fg = text_fg_dark
-                       
+
+            if theme_name == "Default":            
+                page_bg = page_bg_dark
+                text_fg = text_fg_dark
+                sidebar_bg = "rgb(46,46,50)"
+                print(f"""
+                ###############################
+                 page_bg = {page_bg_dark}
+                text_fg = {text_fg_dark}     
+                """)
+            else:
+                page_bg = page_bg_dark
+                text_fg = text_fg_dark
+                           
         else:
             Gtk.StyleContext.add_provider_for_display(
                 display, _css_light_provider,
@@ -2024,10 +2056,15 @@ class EPubViewer(Adw.ApplicationWindow):
                 display, _hover_light_provider,
                 Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1
             )
-            # Reset to light theme colors
-            page_bg = page_bg_light  # Sepia
-            text_fg = text_fg_light
 
+            if theme_name == "Default":            
+                page_bg = page_bg_light 
+                text_fg = text_fg_light
+                sidebar_bg = "rgb(235,235,237)"
+            else:
+                page_bg = page_bg_light  # Sepia
+                text_fg = text_fg_light
+                
         if hasattr(self, "update_webview_theme"):
             self.update_webview_theme()
         
