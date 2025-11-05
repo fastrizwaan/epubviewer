@@ -2053,30 +2053,6 @@ class EPubViewer(Adw.ApplicationWindow):
         self.current_search_query = None  # Store current search query for context menu
         self._loading_book = False  # Flag to prevent auto-save during book load
         
-        # Bookmark format: {
-        #     'type': 'manual' or 'auto',
-        #     'chapter_index': int,
-        #     'chapter_title': str,
-        #     'text_context': str,  # At least 30 words for reliable tracking
-        #     'dom_path': str,      # CSS selector path to element
-        #     'element_index': int, # Index of element in document
-        #     'timestamp': float,
-        #     'note': str (optional)
-        # }
-        
-        # Annotation format: {
-        #     'id': str,           # Unique identifier
-        #     'chapter_index': int,
-        #     'chapter_title': str,
-        #     'selected_text': str,
-        #     'text_before': str,  # Context before selection (20 words)
-        #     'text_after': str,   # Context after selection (20 words)
-        #     'dom_path': str,     # CSS selector to parent element
-        #     'highlight_color': str,
-        #     'note': str,
-        #     'timestamp': float
-        # }
-
         # NEW: column settings - only width-based mode
         self.column_width_px = DEFAULT_SETTINGS["column_width_px"]
         self._column_gap = DEFAULT_SETTINGS["column_gap"]
@@ -2281,6 +2257,8 @@ class EPubViewer(Adw.ApplicationWindow):
         # --- Search tab ---
         # Search entry box
         search_tab_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        search_tab_box.set_margin_top(6); search_tab_box.set_margin_bottom(6)
+        search_tab_box.set_margin_start(6); search_tab_box.set_margin_end(6)
         search_entry_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         search_tab_box.append(search_entry_box)
         # Use Gtk.SearchEntry instead of Gtk.Entry
