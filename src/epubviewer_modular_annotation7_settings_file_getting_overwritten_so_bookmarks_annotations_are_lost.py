@@ -2050,7 +2050,6 @@ class EPubViewer(Adw.ApplicationWindow):
         # Enhanced Bookmarks and Annotations system
         self.bookmarks = []  # List of bookmark dicts
         self.annotations = []  # List of annotation dicts
-        self._loading_book = False  # Flag to prevent auto-save during book load
         
         # Bookmark format: {
         #     'type': 'manual' or 'auto',
@@ -2974,12 +2973,8 @@ class EPubViewer(Adw.ApplicationWindow):
                             'percentage': percentage
                         }
                         print(f"[SCROLL] 💾 Auto-saved position for chapter {self.current_index}: mode={mode}, col={col_index}, %={percentage:.2f}, left={left}, top={top}")
-                        # Only auto-save if not currently loading a book
-                        if not getattr(self, '_loading_book', False):
-                            # Also save to library immediately for persistence
-                            self._save_progress_for_library()
-                        else:
-                            print(f"[SCROLL] ⏸️  Skipping auto-save (book is loading)")
+                        # Also save to library immediately for persistence
+                        self._save_progress_for_library()
         except Exception as e:
             print(f"[SCROLL] ⚠️ Error receiving scroll position: {e}")
 
@@ -3134,7 +3129,7 @@ class EPubViewer(Adw.ApplicationWindow):
             return []
 
 ###################
-
+    # --- Add these methods inside class EPubViewer (minimal, GTK4) ---
     def _apply_font_global(self, font_name=None, size_pt=None):
         js = f"""
         (function(){{
@@ -6463,10 +6458,6 @@ class EPubViewer(Adw.ApplicationWindow):
     # ---- Load EPUB ----
     def load_epub(self, path, resume=False, resume_index=None):
         try:
-            # Set flag to prevent auto-save during load
-            self._loading_book = True
-            print(f"[LOAD] 🔒 Auto-save disabled during book load")
-            
             try: self.toolbar.set_content(self._reader_content_box)
             except Exception: pass
             try:
@@ -6495,30 +6486,13 @@ class EPubViewer(Adw.ApplicationWindow):
 
             # Now read the EPUB - the internal EpubReader will use the patched method
 
-            print(f"[LOAD] 🔄 Loading new book: {os.path.basename(path)}")
-            
-            # CRITICAL: Load saved bookmarks/annotations BEFORE setting book_path
-            # This prevents the race condition where book_path points to new book
-            # but bookmarks are empty, causing empty data to be saved
-            saved_bookmarks = []
-            saved_annotations = []
-            if resume:
-                print(f"[LOAD] 📂 Pre-loading bookmarks for resume")
-                temp_settings = load_book_settings(path)  # Use global function before setting self.book_path
-                if temp_settings:
-                    saved_bookmarks = temp_settings.get('bookmarks', [])
-                    saved_annotations = temp_settings.get('annotations', [])
-                    print(f"[LOAD] ✓ Pre-loaded {len(saved_bookmarks)} bookmarks, {len(saved_annotations)} annotations")
-                else:
-                    print(f"[LOAD] ℹ️ No saved settings found")
-            
-            # Now it's safe to set book_path
             self.book_path = path
             
-            # Set bookmarks/annotations from saved data (or empty for new books)
-            self.bookmarks = saved_bookmarks
-            self.annotations = saved_annotations
-            print(f"[LOAD] 📌 Initialized with {len(self.bookmarks)} bookmarks, {len(self.annotations)} annotations")
+            # Clear bookmarks and annotations at start to prevent showing previous book's data
+            print(f"[LOAD] 🔄 Loading new book: {os.path.basename(path)}")
+            print(f"[LOAD] 🧹 Clearing previous bookmarks and annotations")
+            self.bookmarks = []
+            self.annotations = []
             
             self.book = epub.read_epub(path)
             docs = list(self.book.get_items_of_type(ebooklib.ITEM_DOCUMENT))
@@ -6754,33 +6728,24 @@ class EPubViewer(Adw.ApplicationWindow):
                 else:
                     print(f"[SCROLL] ℹ️ No saved positions found")
                 
-                # Update UI with loaded bookmarks (data already loaded earlier)
+                # Load bookmarks
                 self._load_bookmarks()
                 
-                # Update UI with loaded annotations (data already loaded earlier)
+                # Load annotations
                 self._load_annotations()
-                
-                # Re-enable auto-save after bookmarks/annotations are loaded
-                self._loading_book = False
-                print(f"[LOAD] 🔓 Auto-save re-enabled (resume mode)")
             else:
                 # Reset to defaults for new book
                 self._reset_to_defaults()
                 self.current_index = 0
                 self.saved_scroll_positions = {}
-                # Bookmarks/annotations already initialized to empty earlier
-                print(f"[LOAD] ℹ️ New book - using empty bookmarks/annotations")
-                
-                # Re-enable auto-save for new book
-                self._loading_book = False
-                print(f"[LOAD] 🔓 Auto-save re-enabled (new book)")
+                # Clear bookmarks and annotations for new book
+                self.bookmarks = []
+                self.annotations = []
+                print(f"[LOAD] ℹ️ New book - cleared bookmarks and annotations")
             self.update_navigation(); self.display_page()
             self._update_library_entry()
         except Exception:
             print(traceback.format_exc()); self.show_error("Error loading EPUB — see console")
-        finally:
-            # Ensure flag is cleared even if there's an error
-            self._loading_book = False
 
     def sanitize_path(self, path):
         if not path: return None
@@ -7572,22 +7537,9 @@ class EPubViewer(Adw.ApplicationWindow):
             print("[SETTINGS] ⚠️ Cannot save: no book_path")
             return
         
-        print(f"[SETTINGS] 💾 ===== SAVING BOOK SETTINGS =====")
-        print(f"[SETTINGS] Book: {os.path.basename(self.book_path)}")
+        print(f"[SETTINGS] 💾 Saving book settings for: {os.path.basename(self.book_path)}")
         print(f"[SETTINGS] Current bookmarks count: {len(getattr(self, 'bookmarks', []))}")
         print(f"[SETTINGS] Current annotations count: {len(getattr(self, 'annotations', []))}")
-        
-        # Show first bookmark if exists
-        if hasattr(self, 'bookmarks') and self.bookmarks:
-            print(f"[SETTINGS] First bookmark preview: {self.bookmarks[0].get('chapter_title', 'N/A')[:50]}")
-        else:
-            print(f"[SETTINGS] ⚠️ WARNING: Saving with EMPTY bookmarks!")
-            print(f"[SETTINGS] _loading_book flag: {getattr(self, '_loading_book', 'NOT SET')}")
-            # Show stack trace to see who's calling this
-            import traceback
-            print("[SETTINGS] Call stack:")
-            for line in traceback.format_stack()[:-1]:
-                print(line.strip())
         
         settings = {
             "column_width_px": getattr(self, "column_width_px", DEFAULT_SETTINGS["column_width_px"]),
@@ -8418,13 +8370,13 @@ class EPubViewer(Adw.ApplicationWindow):
                                 const originalBg = elem.style.backgroundColor;
                                 const originalTransition = elem.style.transition;
                                 elem.style.transition = 'background-color 0.3s ease';
-                                elem.style.backgroundColor = 'rgba(255, 235, 59, 0.5)'; 
+                                elem.style.backgroundColor = '#ffeb3b';
                                 setTimeout(() => {{
                                     elem.style.backgroundColor = originalBg || '';
                                     setTimeout(() => {{
                                         elem.style.transition = originalTransition || '';
                                     }}, 300);
-                                }}, 1500);
+                                }}, 2000);
                                 found = true;
                                 break;
                             }}
@@ -8439,13 +8391,13 @@ class EPubViewer(Adw.ApplicationWindow):
                                 const originalBg = elem.style.backgroundColor;
                                 const originalTransition = elem.style.transition;
                                 elem.style.transition = 'background-color 0.3s ease';
-                                elem.style.backgroundColor =  'rgba(255, 235, 59, 0.5)'; 
+                                elem.style.backgroundColor = '#ffeb3b';
                                 setTimeout(() => {{
                                     elem.style.backgroundColor = originalBg || '';
                                     setTimeout(() => {{
                                         elem.style.transition = originalTransition || '';
                                     }}, 300);
-                                }}, 1500);
+                                }}, 2000);
                                 found = true;
                                 break;
                             }}
@@ -8462,9 +8414,7 @@ class EPubViewer(Adw.ApplicationWindow):
                 """
                 
                 # Execute after page loads
-                GLib.timeout_add(500, lambda: (self._execute_js(js), False)[1])
-                GLib.timeout_add(750, self._snap_to_current_column)
-                        
+                GLib.timeout_add(700, lambda: (self._execute_js(js), False)[1])
             else:
                 print(f"[BOOKMARK] ⚠️ No selected_text for bookmark!")
             
@@ -8472,6 +8422,7 @@ class EPubViewer(Adw.ApplicationWindow):
             print(f"[BOOKMARK] ❌ Error jumping to bookmark: {e}")
             import traceback
             traceback.print_exc()
+    
     def _execute_js(self, js):
         """Helper to execute JavaScript in webview."""
         if self.webview:
@@ -8938,16 +8889,15 @@ class EPubViewer(Adw.ApplicationWindow):
                         elem.scrollIntoView({{behavior: 'smooth', block: 'center'}});
                         // Flash highlight
                         const originalBg = elem.style.backgroundColor;
-                        elem.style.backgroundColor = 'rgba(255, 215, 0, 0.5)';
+                        elem.style.backgroundColor = '#ffd700';
                         setTimeout(() => elem.style.backgroundColor = originalBg, 500);
                     }} else {{
                         console.log('[ANNOTATION] Element not found for annotation: {annotation_id}');
                     }}
                 }})();
                 """
-                GLib.timeout_add(500, lambda: self._execute_js(js))
-                GLib.timeout_add(750, self._snap_to_current_column)
-
+                GLib.timeout_add(700, lambda: self._execute_js(js))
+                
         except Exception as e:
             print(f"[ANNOTATION] Error jumping to annotation: {e}")
     

@@ -3134,7 +3134,7 @@ class EPubViewer(Adw.ApplicationWindow):
             return []
 
 ###################
-
+    # --- Add these methods inside class EPubViewer (minimal, GTK4) ---
     def _apply_font_global(self, font_name=None, size_pt=None):
         js = f"""
         (function(){{
@@ -8418,13 +8418,13 @@ class EPubViewer(Adw.ApplicationWindow):
                                 const originalBg = elem.style.backgroundColor;
                                 const originalTransition = elem.style.transition;
                                 elem.style.transition = 'background-color 0.3s ease';
-                                elem.style.backgroundColor = 'rgba(255, 235, 59, 0.5)'; 
+                                elem.style.backgroundColor = '#ffeb3b';
                                 setTimeout(() => {{
                                     elem.style.backgroundColor = originalBg || '';
                                     setTimeout(() => {{
                                         elem.style.transition = originalTransition || '';
                                     }}, 300);
-                                }}, 1500);
+                                }}, 2000);
                                 found = true;
                                 break;
                             }}
@@ -8439,13 +8439,13 @@ class EPubViewer(Adw.ApplicationWindow):
                                 const originalBg = elem.style.backgroundColor;
                                 const originalTransition = elem.style.transition;
                                 elem.style.transition = 'background-color 0.3s ease';
-                                elem.style.backgroundColor =  'rgba(255, 235, 59, 0.5)'; 
+                                elem.style.backgroundColor = '#ffeb3b';
                                 setTimeout(() => {{
                                     elem.style.backgroundColor = originalBg || '';
                                     setTimeout(() => {{
                                         elem.style.transition = originalTransition || '';
                                     }}, 300);
-                                }}, 1500);
+                                }}, 2000);
                                 found = true;
                                 break;
                             }}
@@ -8462,9 +8462,7 @@ class EPubViewer(Adw.ApplicationWindow):
                 """
                 
                 # Execute after page loads
-                GLib.timeout_add(500, lambda: (self._execute_js(js), False)[1])
-                GLib.timeout_add(750, self._snap_to_current_column)
-                        
+                GLib.timeout_add(700, lambda: (self._execute_js(js), False)[1])
             else:
                 print(f"[BOOKMARK] ⚠️ No selected_text for bookmark!")
             
@@ -8472,6 +8470,7 @@ class EPubViewer(Adw.ApplicationWindow):
             print(f"[BOOKMARK] ❌ Error jumping to bookmark: {e}")
             import traceback
             traceback.print_exc()
+    
     def _execute_js(self, js):
         """Helper to execute JavaScript in webview."""
         if self.webview:
@@ -8938,16 +8937,15 @@ class EPubViewer(Adw.ApplicationWindow):
                         elem.scrollIntoView({{behavior: 'smooth', block: 'center'}});
                         // Flash highlight
                         const originalBg = elem.style.backgroundColor;
-                        elem.style.backgroundColor = 'rgba(255, 215, 0, 0.5)';
+                        elem.style.backgroundColor = '#ffd700';
                         setTimeout(() => elem.style.backgroundColor = originalBg, 500);
                     }} else {{
                         console.log('[ANNOTATION] Element not found for annotation: {annotation_id}');
                     }}
                 }})();
                 """
-                GLib.timeout_add(500, lambda: self._execute_js(js))
-                GLib.timeout_add(750, self._snap_to_current_column)
-
+                GLib.timeout_add(700, lambda: self._execute_js(js))
+                
         except Exception as e:
             print(f"[ANNOTATION] Error jumping to annotation: {e}")
     

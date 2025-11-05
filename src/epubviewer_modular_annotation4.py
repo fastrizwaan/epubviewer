@@ -2027,9 +2027,6 @@ class EPubViewer(Adw.ApplicationWindow):
         
         self.set_default_size(1000, 800)
         self.set_title(APP_NAME)
-        
-        # Connect close-request signal to save annotations and bookmarks before closing
-        self.connect("close-request", self._on_window_close)
 
         # state
         self.book = None
@@ -2050,7 +2047,6 @@ class EPubViewer(Adw.ApplicationWindow):
         # Enhanced Bookmarks and Annotations system
         self.bookmarks = []  # List of bookmark dicts
         self.annotations = []  # List of annotation dicts
-        self._loading_book = False  # Flag to prevent auto-save during book load
         
         # Bookmark format: {
         #     'type': 'manual' or 'auto',
@@ -2721,59 +2717,11 @@ class EPubViewer(Adw.ApplicationWindow):
                 if self.dict_webview is None and hasattr(self, 'WebKit'):
                     self.dict_webview = self.WebKit.WebView()
                     dict_settings = self.dict_webview.get_settings()
-                    dict_settings.set_enable_javascript(True)  # Enable JS for URL handling
-                    
-                    # Add navigation policy handler to control which URLs can be opened
-                    def on_dict_decide_policy(webview, decision, decision_type):
-                        if decision_type == WebKit.PolicyDecisionType.NAVIGATION_ACTION:
-                            nav_action = decision.get_navigation_action()
-                            request = nav_action.get_request()
-                            uri = request.get_uri()
-                            
-                            # Allow about:blank (initial load), empty URIs, and wiktionary URLs
-                            if not uri or uri == 'about:blank' or 'wiktionary' in uri:
-                                # Allow navigation
-                                decision.use()
-                            else:
-                                # Reject non-wiktionary URLs
-                                decision.ignore()
-                                print(f"[DICT] Blocked non-wiktionary URL: {uri}")
-                            return True
-                        return False
-                    
-                    self.dict_webview.connect("decide-policy", on_dict_decide_policy)
+                    dict_settings.set_enable_javascript(False)
                     self.dict_scrolled.set_child(self.dict_webview)
-                    
-                    # Set initial message with theme awareness
-                    initial_html = """
-                    <!DOCTYPE html>
-                    <html>
-                    <head>
-                        <meta charset="utf-8">
-                        <meta name="color-scheme" content="light dark">
-                        <style>
-                            body {
-                                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                                padding: 20px;
-                                text-align: center;
-                                color: #666;
-                                background-color: #fff;
-                            }
-                            @media (prefers-color-scheme: dark) {
-                                body {
-                                    color: #999;
-                                    background-color: #1e1e1e;
-                                }
-                            }
-                        </style>
-                    </head>
-                    <body>
-                        <p>Enter a word above to see its definition.</p>
-                    </body>
-                    </html>
-                    """
-                    self._set_dict_html(initial_html)
-                    print("✓ Dictionary webview initialized with theme awareness")
+                    # Set initial message
+                    self._set_dict_html("<p style='text-align: center; padding: 20px; color: #666;'>Enter a word above to see its definition.</p>")
+                    print("✓ Dictionary webview initialized")
             except Exception as e:
                 print(f"⚠ Could not initialize dictionary webview: {e}")
             # after creating self.webview (inside __init__), add:
@@ -2974,12 +2922,8 @@ class EPubViewer(Adw.ApplicationWindow):
                             'percentage': percentage
                         }
                         print(f"[SCROLL] 💾 Auto-saved position for chapter {self.current_index}: mode={mode}, col={col_index}, %={percentage:.2f}, left={left}, top={top}")
-                        # Only auto-save if not currently loading a book
-                        if not getattr(self, '_loading_book', False):
-                            # Also save to library immediately for persistence
-                            self._save_progress_for_library()
-                        else:
-                            print(f"[SCROLL] ⏸️  Skipping auto-save (book is loading)")
+                        # Also save to library immediately for persistence
+                        self._save_progress_for_library()
         except Exception as e:
             print(f"[SCROLL] ⚠️ Error receiving scroll position: {e}")
 
@@ -3134,7 +3078,7 @@ class EPubViewer(Adw.ApplicationWindow):
             return []
 
 ###################
-
+    # --- Add these methods inside class EPubViewer (minimal, GTK4) ---
     def _apply_font_global(self, font_name=None, size_pt=None):
         js = f"""
         (function(){{
@@ -4663,9 +4607,6 @@ class EPubViewer(Adw.ApplicationWindow):
         try:
             if getattr(self, "book", None):
                 try:
-                    # Save annotations and bookmarks before closing
-                    self._save_annotations()
-                    self._save_bookmarks()
                     self.content_sidebar_toggle.set_visible(False)
                     self.split.set_show_sidebar(False)
                     self.split.set_collapsed(False)
@@ -4675,37 +4616,6 @@ class EPubViewer(Adw.ApplicationWindow):
             self.show_library()
         except Exception:
             pass
-
-    def _on_window_close(self, window):
-        """Handle window close event - save annotations and bookmarks before exiting."""
-        print("[APP] 🔒 Window closing, saving annotations and bookmarks...")
-        try:
-            if getattr(self, 'book_path', None) and getattr(self, 'book', None):
-                # Save annotations
-                try:
-                    self._save_annotations()
-                    print("[APP] ✓ Annotations saved on exit")
-                except Exception as e:
-                    print(f"[APP] ⚠️ Error saving annotations on exit: {e}")
-                
-                # Save bookmarks
-                try:
-                    self._save_bookmarks()
-                    print("[APP] ✓ Bookmarks saved on exit")
-                except Exception as e:
-                    print(f"[APP] ⚠️ Error saving bookmarks on exit: {e}")
-                
-                # Save progress
-                try:
-                    self._save_progress_for_library()
-                    print("[APP] ✓ Progress saved on exit")
-                except Exception as e:
-                    print(f"[APP] ⚠️ Error saving progress on exit: {e}")
-        except Exception as e:
-            print(f"[APP] ⚠️ Error in window close handler: {e}")
-        
-        # Return False to allow the window to close
-        return False
 
     def _stop_reading(self, path=None):
         try:
@@ -6025,7 +5935,7 @@ class EPubViewer(Adw.ApplicationWindow):
         """
 
         # Context menu for annotations
-        annotation_menu_script = r"""
+        annotation_menu_script = """
         <script>
         (function(){
             // Create custom context menu
@@ -6238,31 +6148,7 @@ class EPubViewer(Adw.ApplicationWindow):
                         }
                     }
                     
-                    // Find the end of the current sentence
-                    let sentenceEnd = fullText.length;
-                    for (let i = clickOffset; i < fullText.length; i++) {
-                        const char = fullText[i];
-                        if (char === '.' || char === '!' || char === '?') {
-                            // Check if it's a sentence boundary
-                            if (i < fullText.length - 1 && fullText[i + 1] === ' ') {
-                                sentenceEnd = i + 1;
-                                break;
-                            }
-                        }
-                    }
-                    
-                    // Extract the current sentence
-                    const currentSentence = fullText.substring(sentenceStart, sentenceEnd).trim();
-                    
-                    // Get 20 words before the sentence
-                    const textBeforeSentence = fullText.substring(0, sentenceStart).trim();
-                    const wordsBefore = textBeforeSentence.split(/\s+/).slice(-20).join(' ');
-                    
-                    // Get 20 words after the sentence
-                    const textAfterSentence = fullText.substring(sentenceEnd).trim();
-                    const wordsAfter = textAfterSentence.split(/\s+/).slice(0, 20).join(' ');
-                    
-                    // Get text from the sentence start to the end (for TTS)
+                    // Get text from the sentence start to the end
                     const textFromHere = fullText.substring(sentenceStart).trim();
                     
                     // Get DOM path for bookmark
@@ -6299,17 +6185,14 @@ class EPubViewer(Adw.ApplicationWindow):
                         }
                     };
                     
-                    // Handle Add Bookmark Here button - uses annotation-style tracking
+                    // Handle Add Bookmark Here button
                     menu.querySelector('.context-menu-bookmark').onclick = function() {
                         menu.style.display = 'none';
                         
                         if (window.webkit && window.webkit.messageHandlers && 
                             window.webkit.messageHandlers.bookmarkRequest) {
-                            // Send sentence + context like annotations
                             window.webkit.messageHandlers.bookmarkRequest.postMessage(JSON.stringify({
-                                text: currentSentence,     // The sentence at click position
-                                before: wordsBefore,        // 20 words before
-                                after: wordsAfter,          // 20 words after
+                                textContext: fullText.substring(0, 200),
                                 path: path.join(' > ')
                             }));
                         }
@@ -6463,10 +6346,6 @@ class EPubViewer(Adw.ApplicationWindow):
     # ---- Load EPUB ----
     def load_epub(self, path, resume=False, resume_index=None):
         try:
-            # Set flag to prevent auto-save during load
-            self._loading_book = True
-            print(f"[LOAD] 🔒 Auto-save disabled during book load")
-            
             try: self.toolbar.set_content(self._reader_content_box)
             except Exception: pass
             try:
@@ -6495,31 +6374,7 @@ class EPubViewer(Adw.ApplicationWindow):
 
             # Now read the EPUB - the internal EpubReader will use the patched method
 
-            print(f"[LOAD] 🔄 Loading new book: {os.path.basename(path)}")
-            
-            # CRITICAL: Load saved bookmarks/annotations BEFORE setting book_path
-            # This prevents the race condition where book_path points to new book
-            # but bookmarks are empty, causing empty data to be saved
-            saved_bookmarks = []
-            saved_annotations = []
-            if resume:
-                print(f"[LOAD] 📂 Pre-loading bookmarks for resume")
-                temp_settings = load_book_settings(path)  # Use global function before setting self.book_path
-                if temp_settings:
-                    saved_bookmarks = temp_settings.get('bookmarks', [])
-                    saved_annotations = temp_settings.get('annotations', [])
-                    print(f"[LOAD] ✓ Pre-loaded {len(saved_bookmarks)} bookmarks, {len(saved_annotations)} annotations")
-                else:
-                    print(f"[LOAD] ℹ️ No saved settings found")
-            
-            # Now it's safe to set book_path
             self.book_path = path
-            
-            # Set bookmarks/annotations from saved data (or empty for new books)
-            self.bookmarks = saved_bookmarks
-            self.annotations = saved_annotations
-            print(f"[LOAD] 📌 Initialized with {len(self.bookmarks)} bookmarks, {len(self.annotations)} annotations")
-            
             self.book = epub.read_epub(path)
             docs = list(self.book.get_items_of_type(ebooklib.ITEM_DOCUMENT))
             id_map = {}
@@ -6754,33 +6609,22 @@ class EPubViewer(Adw.ApplicationWindow):
                 else:
                     print(f"[SCROLL] ℹ️ No saved positions found")
                 
-                # Update UI with loaded bookmarks (data already loaded earlier)
+                # Load bookmarks
                 self._load_bookmarks()
                 
-                # Update UI with loaded annotations (data already loaded earlier)
+                # Load annotations
                 self._load_annotations()
-                
-                # Re-enable auto-save after bookmarks/annotations are loaded
-                self._loading_book = False
-                print(f"[LOAD] 🔓 Auto-save re-enabled (resume mode)")
             else:
                 # Reset to defaults for new book
                 self._reset_to_defaults()
                 self.current_index = 0
                 self.saved_scroll_positions = {}
-                # Bookmarks/annotations already initialized to empty earlier
-                print(f"[LOAD] ℹ️ New book - using empty bookmarks/annotations")
-                
-                # Re-enable auto-save for new book
-                self._loading_book = False
-                print(f"[LOAD] 🔓 Auto-save re-enabled (new book)")
+                self.bookmarks = []
+                self.annotations = []
             self.update_navigation(); self.display_page()
             self._update_library_entry()
         except Exception:
             print(traceback.format_exc()); self.show_error("Error loading EPUB — see console")
-        finally:
-            # Ensure flag is cleared even if there's an error
-            self._loading_book = False
 
     def sanitize_path(self, path):
         if not path: return None
@@ -7572,22 +7416,8 @@ class EPubViewer(Adw.ApplicationWindow):
             print("[SETTINGS] ⚠️ Cannot save: no book_path")
             return
         
-        print(f"[SETTINGS] 💾 ===== SAVING BOOK SETTINGS =====")
-        print(f"[SETTINGS] Book: {os.path.basename(self.book_path)}")
+        print(f"[SETTINGS] 💾 Saving book settings for: {os.path.basename(self.book_path)}")
         print(f"[SETTINGS] Current bookmarks count: {len(getattr(self, 'bookmarks', []))}")
-        print(f"[SETTINGS] Current annotations count: {len(getattr(self, 'annotations', []))}")
-        
-        # Show first bookmark if exists
-        if hasattr(self, 'bookmarks') and self.bookmarks:
-            print(f"[SETTINGS] First bookmark preview: {self.bookmarks[0].get('chapter_title', 'N/A')[:50]}")
-        else:
-            print(f"[SETTINGS] ⚠️ WARNING: Saving with EMPTY bookmarks!")
-            print(f"[SETTINGS] _loading_book flag: {getattr(self, '_loading_book', 'NOT SET')}")
-            # Show stack trace to see who's calling this
-            import traceback
-            print("[SETTINGS] Call stack:")
-            for line in traceback.format_stack()[:-1]:
-                print(line.strip())
         
         settings = {
             "column_width_px": getattr(self, "column_width_px", DEFAULT_SETTINGS["column_width_px"]),
@@ -7607,33 +7437,10 @@ class EPubViewer(Adw.ApplicationWindow):
             "scroll_positions": {str(k): (v if isinstance(v, dict) else {'mode': 'multi' if (isinstance(v, (tuple, list)) and len(v) > 0 and v[0] > 0) else 'single', 'scrollLeft': v[0] if isinstance(v, (tuple, list)) and len(v) > 0 else 0, 'scrollTop': v[1] if isinstance(v, (tuple, list)) and len(v) > 1 else 0, 'columnIndex': None, 'percentage': 0.0}) for k, v in self.saved_scroll_positions.items()},
             # Add bookmarks to settings
             "bookmarks": getattr(self, "bookmarks", []),
-            # Add annotations to settings
-            "annotations": getattr(self, "annotations", []),
         }
         
         print(f"[SETTINGS] Saving {len(settings['bookmarks'])} bookmarks to disk")
-        print(f"[SETTINGS] Saving {len(settings['annotations'])} annotations to disk")
-        
-        # Get the settings file path for debugging
-        settings_file = self.library_manager.get_book_settings_file(self.book_path)
-        print(f"[SETTINGS] Settings file path: {settings_file}")
-        
-        # Save the settings
         self.library_manager.save_book_settings(self.book_path, settings)
-        
-        # Verify file was created and contains data
-        if settings_file and os.path.exists(settings_file):
-            try:
-                with open(settings_file, 'r') as f:
-                    saved_data = json.load(f)
-                    print(f"[SETTINGS] ✓ File written successfully")
-                    print(f"[SETTINGS] ✓ File contains {len(saved_data.get('bookmarks', []))} bookmarks")
-                    print(f"[SETTINGS] ✓ File contains {len(saved_data.get('annotations', []))} annotations")
-            except Exception as e:
-                print(f"[SETTINGS] ⚠️ Error verifying saved file: {e}")
-        else:
-            print(f"[SETTINGS] ⚠️ Settings file not found after save!")
-        
         print(f"[SETTINGS] ✓ Settings saved")
     
     def _load_book_settings(self):
@@ -8346,132 +8153,79 @@ class EPubViewer(Adw.ApplicationWindow):
             print(f"[BOOKMARK] ⚠️ Invalid bookmark index: {bookmark_index} (total: {len(self.bookmarks)})")
     
     def _jump_to_bookmark(self, bookmark):
-        """Jump to a bookmarked position using annotation-style tracking (text_before, selected_text, text_after)."""
+        """Jump to a bookmarked position using text context."""
         try:
             chapter_index = bookmark['chapter_index']
-            selected_text = bookmark.get('selected_text', '')
-            text_before = bookmark.get('text_before', '')
-            text_after = bookmark.get('text_after', '')
-            
-            print(f"[BOOKMARK] 🔖 Jumping to bookmark")
-            print(f"[BOOKMARK]    Chapter: {chapter_index} - {bookmark.get('chapter_title')}")
-            print(f"[BOOKMARK]    Selected text: {selected_text[:50]}...")
+            text_context = bookmark.get('text_context', '')
+            dom_path = bookmark.get('dom_path', '')
+            element_index = bookmark.get('element_index', 0)
             
             if chapter_index < 0 or chapter_index >= len(self.items):
                 print(f"[BOOKMARK] ⚠️ Invalid chapter index: {chapter_index}")
                 return
             
-            # Navigate to chapter if different
-            if self.current_index != chapter_index:
-                self.current_index = chapter_index
-                self.update_navigation()
-                self.display_page()
+            print(f"[BOOKMARK] 🔖 Jumping to: {bookmark['chapter_title']}")
             
-            # After page loads, find and scroll to the bookmarked text
-            if self.webview and selected_text:
-                # Use the same logic as annotations
-                # Escape for JavaScript
-                def js_escape(text):
-                    return text.replace('\\', '\\\\').replace("'", "\\'").replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
-                
-                search_text = js_escape(selected_text)
-                context_before = js_escape(text_before[:100])  # Use last 100 chars of before
-                context_after = js_escape(text_after[:100])    # Use first 100 chars of after
-                
+            # Save current position before jumping
+            if self.current_index is not None and self.current_index != chapter_index:
+                self._add_auto_bookmark(self.current_index)
+            
+            # Navigate to chapter
+            self.current_index = chapter_index
+            self.update_navigation()
+            self.display_page()
+            
+            # After page loads, find and scroll to the bookmarked position
+            if self.webview and text_context:
+                # JavaScript to find and scroll to text
                 js = f"""
                 (function() {{
-                    try {{
-                        const searchText = '{search_text}';
-                        const textBefore = '{context_before}';
-                        const textAfter = '{context_after}';
-                        
-                        const container = document.querySelector('.ebook-content');
-                        if (!container) {{
-                            console.log('[JS] [BOOKMARK] No .ebook-content found');
+                    const searchText = `{text_context[:30]}`;  // Use first 30 chars for searching
+                    const container = document.querySelector('.ebook-content');
+                    if (!container) return;
+                    
+                    // Try to find by DOM path first
+                    if ('{dom_path}') {{
+                        const elem = document.querySelector('{dom_path}');
+                        if (elem) {{
+                            elem.scrollIntoView({{behavior: 'smooth', block: 'center'}});
+                            // Highlight briefly
+                            elem.style.backgroundColor = '#ffeb3b';
+                            setTimeout(() => elem.style.backgroundColor = '', 2000);
                             return;
                         }}
-                        
-                        console.log('[JS] [BOOKMARK] Searching for text:', searchText.substring(0, 50));
-                        
-                        // Build full context for better matching
-                        const fullContext = textBefore + searchText + textAfter;
-                        
-                        // Search for the text
-                        const walker = document.createTreeWalker(
-                            container,
-                            NodeFilter.SHOW_TEXT,
-                            null
-                        );
-                        
-                        let found = false;
-                        let node;
-                        while (node = walker.nextNode()) {{
-                            const text = node.textContent || '';
-                            
-                            // Try to find by full context first
-                            if (fullContext && text.includes(fullContext)) {{
-                                const elem = node.parentElement;
-                                console.log('[JS] [BOOKMARK] Found by full context');
-                                elem.scrollIntoView({{behavior: 'smooth', block: 'center'}});
-                                
-                                // Highlight briefly
-                                const originalBg = elem.style.backgroundColor;
-                                const originalTransition = elem.style.transition;
-                                elem.style.transition = 'background-color 0.3s ease';
-                                elem.style.backgroundColor = 'rgba(255, 235, 59, 0.5)'; 
-                                setTimeout(() => {{
-                                    elem.style.backgroundColor = originalBg || '';
-                                    setTimeout(() => {{
-                                        elem.style.transition = originalTransition || '';
-                                    }}, 300);
-                                }}, 1500);
-                                found = true;
-                                break;
-                            }}
-                            
-                            // Fallback: try just the selected text
-                            if (searchText && text.includes(searchText)) {{
-                                const elem = node.parentElement;
-                                console.log('[JS] [BOOKMARK] Found by selected text');
-                                elem.scrollIntoView({{behavior: 'smooth', block: 'center'}});
-                                
-                                // Highlight briefly
-                                const originalBg = elem.style.backgroundColor;
-                                const originalTransition = elem.style.transition;
-                                elem.style.transition = 'background-color 0.3s ease';
-                                elem.style.backgroundColor =  'rgba(255, 235, 59, 0.5)'; 
-                                setTimeout(() => {{
-                                    elem.style.backgroundColor = originalBg || '';
-                                    setTimeout(() => {{
-                                        elem.style.transition = originalTransition || '';
-                                    }}, 300);
-                                }}, 1500);
-                                found = true;
-                                break;
-                            }}
+                    }}
+                    
+                    // Fallback: search for text
+                    const walker = document.createTreeWalker(
+                        container,
+                        NodeFilter.SHOW_TEXT,
+                        null,
+                        false
+                    );
+                    
+                    let node;
+                    while (node = walker.nextNode()) {{
+                        if (node.textContent.includes(searchText)) {{
+                            const elem = node.parentElement;
+                            elem.scrollIntoView({{behavior: 'smooth', block: 'center'}});
+                            // Highlight briefly
+                            elem.style.backgroundColor = '#ffeb3b';
+                            setTimeout(() => elem.style.backgroundColor = '', 2000);
+                            break;
                         }}
-                        
-                        if (!found) {{
-                            console.log('[JS] [BOOKMARK] Could not find bookmark text');
-                            window.scrollTo({{top: 0, behavior: 'smooth'}});
-                        }}
-                    }} catch(e) {{
-                        console.error('[JS] [BOOKMARK] Error:', e);
                     }}
                 }})();
                 """
                 
-                # Execute after page loads
-                GLib.timeout_add(500, lambda: (self._execute_js(js), False)[1])
-                GLib.timeout_add(750, self._snap_to_current_column)
-                        
-            else:
-                print(f"[BOOKMARK] ⚠️ No selected_text for bookmark!")
+                # Execute after a delay to ensure page is loaded
+                GLib.timeout_add(500, lambda: self._execute_js(js))
             
         except Exception as e:
             print(f"[BOOKMARK] ❌ Error jumping to bookmark: {e}")
             import traceback
             traceback.print_exc()
+    
     def _execute_js(self, js):
         """Helper to execute JavaScript in webview."""
         if self.webview:
@@ -8533,18 +8287,14 @@ class EPubViewer(Adw.ApplicationWindow):
             title_label.add_css_class("heading")
             text_box.append(title_label)
             
-            # Position info - show selected text (annotation-style)
-            selected_text = bookmark.get('selected_text', '')
-            if not selected_text:
-                # Fallback: try old text_context format
-                selected_text = bookmark.get('text_context', '')
-            
-            if selected_text:
-                # Show first 50 characters of the sentence
-                context_preview = selected_text[:50] + "..." if len(selected_text) > 50 else selected_text
+            # Position info - show text context instead of column position
+            text_context = bookmark.get('text_context', '')
+            if text_context:
+                # Show first 50 characters of context
+                context_preview = text_context[:50] + "..." if len(text_context) > 50 else text_context
                 pos_text = f'"{context_preview}"'
             else:
-                # Fallback for very old bookmarks
+                # Fallback for old bookmarks without text context
                 pos = bookmark.get('position')
                 if isinstance(pos, dict):
                     mode = pos.get('mode', 'multi')
@@ -8617,29 +8367,17 @@ class EPubViewer(Adw.ApplicationWindow):
             return
         
         try:
-            # Get settings file path for debugging
-            settings_file = self.library_manager.get_book_settings_file(self.book_path)
-            print(f"[BOOKMARK]    Settings file: {settings_file}")
-            print(f"[BOOKMARK]    File exists: {os.path.exists(settings_file) if settings_file else False}")
-            
             # Bookmarks are now part of book settings
             settings = self.library_manager.load_book_settings(self.book_path)
             print(f"[BOOKMARK]    Loaded settings: {settings is not None}")
             
             if settings:
                 print(f"[BOOKMARK]    Settings keys: {list(settings.keys())}")
-                if 'bookmarks' in settings:
-                    print(f"[BOOKMARK]    Bookmarks in settings: {len(settings['bookmarks'])}")
                 
             if settings and 'bookmarks' in settings:
                 self.bookmarks = settings['bookmarks']
                 print(f"[BOOKMARK] 📂 Loaded {len(self.bookmarks)} bookmarks from file")
-                if self.bookmarks:
-                    print(f"[BOOKMARK]    First bookmark preview:")
-                    b = self.bookmarks[0]
-                    print(f"[BOOKMARK]      - Type: {b.get('type')}")
-                    print(f"[BOOKMARK]      - Chapter: {b.get('chapter_index')} - {b.get('chapter_title')}")
-                    print(f"[BOOKMARK]      - Text: {b.get('text_context', '')[:50]}...")
+                print(f"[BOOKMARK]    Bookmarks: {[(b['type'], b['chapter_index'], b['chapter_title']) for b in self.bookmarks]}")
             else:
                 self.bookmarks = []
                 print(f"[BOOKMARK] ℹ️ No bookmarks found in settings")
@@ -8938,16 +8676,15 @@ class EPubViewer(Adw.ApplicationWindow):
                         elem.scrollIntoView({{behavior: 'smooth', block: 'center'}});
                         // Flash highlight
                         const originalBg = elem.style.backgroundColor;
-                        elem.style.backgroundColor = 'rgba(255, 215, 0, 0.5)';
+                        elem.style.backgroundColor = '#ffd700';
                         setTimeout(() => elem.style.backgroundColor = originalBg, 500);
                     }} else {{
                         console.log('[ANNOTATION] Element not found for annotation: {annotation_id}');
                     }}
                 }})();
                 """
-                GLib.timeout_add(500, lambda: self._execute_js(js))
-                GLib.timeout_add(750, self._snap_to_current_column)
-
+                GLib.timeout_add(700, lambda: self._execute_js(js))
+                
         except Exception as e:
             print(f"[ANNOTATION] Error jumping to annotation: {e}")
     
@@ -8977,66 +8714,37 @@ class EPubViewer(Adw.ApplicationWindow):
             return
         
         try:
-            # Annotations are now part of book settings
-            self._save_book_settings()
-            print(f"[ANNOTATION] 💾 Saved {len(self.annotations)} annotations")
+            settings = self.get_current_book_settings()
+            settings['annotations'] = self.annotations
+            save_book_settings(self.book_path, settings)
+            print(f"[ANNOTATION] Saved {len(self.annotations)} annotations")
         except Exception as e:
-            print(f"[ANNOTATION] ⚠️ Error saving annotations: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"[ANNOTATION] Error saving annotations: {e}")
     
     def _load_annotations(self):
         """Load annotations from file."""
-        print(f"[ANNOTATION] 📂 _load_annotations called")
-        print(f"[ANNOTATION]    book_path: {self.book_path}")
-        
         if not self.book_path:
             self.annotations = []
-            print(f"[ANNOTATION] ⚠️ No book_path, initializing empty annotations")
             return
         
         try:
-            # Get settings file path for debugging
-            settings_file = self.library_manager.get_book_settings_file(self.book_path)
-            print(f"[ANNOTATION]    Settings file: {settings_file}")
-            print(f"[ANNOTATION]    File exists: {os.path.exists(settings_file) if settings_file else False}")
-            
-            settings = self.library_manager.load_book_settings(self.book_path)
-            print(f"[ANNOTATION]    Loaded settings: {settings is not None}")
-            
-            if settings:
-                print(f"[ANNOTATION]    Settings keys: {list(settings.keys())}")
-                if 'annotations' in settings:
-                    print(f"[ANNOTATION]    Annotations in settings: {len(settings['annotations'])}")
-            
+            settings = load_book_settings(self.book_path)
             if settings and 'annotations' in settings:
                 self.annotations = settings['annotations']
-                print(f"[ANNOTATION] 📂 Loaded {len(self.annotations)} annotations from file")
-                if self.annotations:
-                    print(f"[ANNOTATION]    First annotation preview:")
-                    a = self.annotations[0]
-                    print(f"[ANNOTATION]      - ID: {a.get('id')}")
-                    print(f"[ANNOTATION]      - Chapter: {a.get('chapter_index')} - {a.get('chapter_title')}")
-                    print(f"[ANNOTATION]      - Text: {a.get('selected_text', '')[:50]}...")
+                print(f"[ANNOTATION] Loaded {len(self.annotations)} annotations")
             else:
                 self.annotations = []
-                print(f"[ANNOTATION] ℹ️ No annotations found in settings")
             
-            # Update the UI
-            print(f"[ANNOTATION] 🔄 Calling _update_annotations_list")
             self._update_annotations_list()
             
-            # Apply highlights for current chapter after a short delay to ensure page is loaded
+            # Apply highlights for current chapter
             if self.current_index is not None:
-                print(f"[ANNOTATION] ⏱️ Scheduling highlight application for chapter {self.current_index}")
-                GLib.timeout_add(500, lambda: (self._reapply_annotation_highlights(), False)[1])
-            
-            print(f"[ANNOTATION] ✓ Annotations loaded and UI updated")
+                for annotation in self.annotations:
+                    if annotation['chapter_index'] == self.current_index:
+                        self._apply_annotation_highlight(annotation)
                         
         except Exception as e:
-            print(f"[ANNOTATION] ⚠️ Error loading annotations: {e}")
-            import traceback
-            traceback.print_exc()
+            print(f"[ANNOTATION] Error loading annotations: {e}")
             self.annotations = []
     
     def _reapply_annotation_highlights(self):
@@ -9084,35 +8792,8 @@ class EPubViewer(Adw.ApplicationWindow):
         if not word:
             return
         
-        # Show loading message with theme awareness
-        loading_html = f"""
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <meta charset="utf-8">
-            <meta name="color-scheme" content="light dark">
-            <style>
-                body {{
-                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                    padding: 20px;
-                    text-align: center;
-                    color: #333;
-                    background-color: #fff;
-                }}
-                @media (prefers-color-scheme: dark) {{
-                    body {{
-                        color: #e0e0e0;
-                        background-color: #1e1e1e;
-                    }}
-                }}
-            </style>
-        </head>
-        <body>
-            <p>Loading definition for <b>{word}</b>...</p>
-        </body>
-        </html>
-        """
-        self._set_dict_html(loading_html)
+        # Show loading message
+        self._set_dict_html(f"<p style='text-align: center; padding: 20px;'>Loading definition for <b>{word}</b>...</p>")
         
         # Fetch definition in background thread
         def fetch_definition():
@@ -9137,38 +8818,11 @@ class EPubViewer(Adw.ApplicationWindow):
                     
             except Exception as e:
                 error_html = f"""
-                <!DOCTYPE html>
-                <html>
-                <head>
-                    <meta charset="utf-8">
-                    <meta name="color-scheme" content="light dark">
-                    <style>
-                        body {{
-                            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                            padding: 20px;
-                            color: #d32f2f;
-                            background-color: #fff;
-                        }}
-                        @media (prefers-color-scheme: dark) {{
-                            body {{
-                                color: #ef5350;
-                                background-color: #1e1e1e;
-                            }}
-                            .subtitle {{
-                                color: #999 !important;
-                            }}
-                        }}
-                        .subtitle {{
-                            color: #666;
-                        }}
-                    </style>
-                </head>
-                <body>
+                <div style="padding: 20px; color: #d32f2f;">
                     <h3>Error fetching definition</h3>
                     <p>{str(e)}</p>
-                    <p class="subtitle">Make sure you have an internet connection.</p>
-                </body>
-                </html>
+                    <p style="color: #666;">Make sure you have an internet connection.</p>
+                </div>
                 """
                 GLib.idle_add(lambda: (self._set_dict_html(error_html), False)[1])
         
@@ -9177,49 +8831,20 @@ class EPubViewer(Adw.ApplicationWindow):
         thread.start()
     
     def _build_definition_html(self, word, data):
-        """Build HTML from Wiktionary definition data with theme awareness."""
+        """Build HTML from Wiktionary definition data."""
         html_parts = []
         html_parts.append(f"""
         <!DOCTYPE html>
         <html>
         <head>
             <meta charset="utf-8">
-            <meta name="color-scheme" content="light dark">
             <style>
                 body {{
                     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                     padding: 15px;
                     line-height: 1.6;
                     color: #333;
-                    background-color: #fff;
                 }}
-                
-                @media (prefers-color-scheme: dark) {{
-                    body {{
-                        color: #e0e0e0;
-                        background-color: #1e1e1e;
-                    }}
-                    h2 {{
-                        color: #64b5f6 !important;
-                        border-bottom-color: #64b5f6 !important;
-                    }}
-                    h3 {{
-                        color: #bdbdbd !important;
-                    }}
-                    .definition-number {{
-                        color: #64b5f6 !important;
-                    }}
-                    .example {{
-                        color: #999 !important;
-                    }}
-                    .no-definition {{
-                        color: #ef5350 !important;
-                    }}
-                    a {{
-                        color: #64b5f6 !important;
-                    }}
-                }}
-                
                 h2 {{
                     color: #1976d2;
                     margin-top: 0;
@@ -9250,30 +8875,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     padding: 20px;
                     text-align: center;
                 }}
-                a {{
-                    color: #1976d2;
-                    text-decoration: none;
-                }}
-                a:hover {{
-                    text-decoration: underline;
-                }}
             </style>
-            <script>
-                // Convert non-wiktionary links to plain text
-                document.addEventListener('DOMContentLoaded', function() {{
-                    const links = document.querySelectorAll('a');
-                    links.forEach(link => {{
-                        const href = link.getAttribute('href');
-                        if (href && !href.includes('wiktionary')) {{
-                            // Convert link to plain text span
-                            const span = document.createElement('span');
-                            span.textContent = link.textContent;
-                            span.style.color = 'inherit';
-                            link.parentNode.replaceChild(span, link);
-                        }}
-                    }});
-                }});
-            </script>
         </head>
         <body>
             <h2>Word: {word}</h2>
@@ -9345,23 +8947,15 @@ class EPubViewer(Adw.ApplicationWindow):
                 
                 if sentences:
                     print(f"[TTS] Starting playback with {len(sentences)} sentences")
-                    
-                    # Wrap sentences in DOM for highlighting
-                    self._wrap_speak_sentences(sentences)
-                    
-                    # Small delay to let DOM update, then start TTS
-                    def start_tts():
-                        try:
-                            self.tts.speak_sentences_list(
-                                sentences,
-                                highlight_callback=self._on_tts_highlight,
-                                finished_callback=self._on_tts_finished
-                            )
-                        except Exception as e:
-                            print(f"[TTS] Error in speak_sentences_list: {e}")
-                        return False
-                    
-                    GLib.timeout_add(100, start_tts)
+                    # Use the existing TTS method
+                    try:
+                        self.tts.speak_sentences_list(
+                            sentences,
+                            highlight_callback=self._on_tts_highlight,
+                            finished_callback=self._on_tts_finished
+                        )
+                    except Exception as e:
+                        print(f"[TTS] Error in speak_sentences_list: {e}")
                 else:
                     print(f"[TTS] No sentences to speak")
             else:
@@ -9372,214 +8966,35 @@ class EPubViewer(Adw.ApplicationWindow):
             import traceback
             traceback.print_exc()
     
-    def _wrap_speak_sentences(self, sentences):
-        """Wrap sentences in DOM spans for TTS highlighting."""
-        if not self.webview:
-            return
-        
-        try:
-            import json
-            
-            # Build JavaScript to wrap sentences
-            sentences_data = []
-            for sent in sentences:
-                sentences_data.append({
-                    'sid': sent['sid'],
-                    'text': sent['text']
-                })
-            
-            sentences_json = json.dumps(sentences_data)
-            
-            js = f"""
-            (function() {{
-                try {{
-                    var cont = document.querySelector('.ebook-content') || document.body;
-                    if (!cont) {{
-                        console.log('[TTS] No content container found');
-                        return;
-                    }}
-                    
-                    // Add TTS style if not present
-                    if (!document.querySelector('style[data-tts-style]')) {{
-                        var st = document.createElement('style');
-                        st.dataset.ttsStyle = '1';
-                        st.textContent = '.tts-highlight{{background:rgba(0,200,0,0.14);border-radius:4px;}} .tts-sentence{{display:inline;}}';
-                        document.head.appendChild(st);
-                    }}
-                    
-                    // Remove any previous TTS wrapping
-                    var oldSpans = cont.querySelectorAll('.tts-sentence');
-                    oldSpans.forEach(function(span) {{
-                        var parent = span.parentNode;
-                        while (span.firstChild) {{
-                            parent.insertBefore(span.firstChild, span);
-                        }}
-                        parent.removeChild(span);
-                    }});
-                    
-                    // Get sentence data
-                    var sentences = {sentences_json};
-                    
-                    // Build global text map
-                    var walker = document.createTreeWalker(cont, NodeFilter.SHOW_TEXT, null);
-                    var textNodes = [];
-                    var node;
-                    while (node = walker.nextNode()) {{
-                        textNodes.push(node);
-                    }}
-                    
-                    var fullText = '';
-                    var nodeMap = [];
-                    for (var i = 0; i < textNodes.length; i++) {{
-                        var txt = textNodes[i].nodeValue || '';
-                        var start = fullText.length;
-                        fullText += txt;
-                        nodeMap.push({{
-                            node: textNodes[i],
-                            start: start,
-                            end: fullText.length
-                        }});
-                    }}
-                    
-                    // Wrap each sentence
-                    var searchPos = 0;
-                    for (var s = 0; s < sentences.length; s++) {{
-                        var sent = sentences[s];
-                        var sentText = sent.text.trim();
-                        var idx = fullText.indexOf(sentText, searchPos);
-                        
-                        if (idx === -1) {{
-                            console.log('[TTS] Could not find sentence:', sentText.substring(0, 30));
-                            continue;
-                        }}
-                        
-                        // Find which text node(s) contain this sentence
-                        var startNode = null, startOffset = 0;
-                        var endNode = null, endOffset = 0;
-                        
-                        for (var i = 0; i < nodeMap.length; i++) {{
-                            var nm = nodeMap[i];
-                            if (nm.start <= idx && nm.end > idx) {{
-                                startNode = nm.node;
-                                startOffset = idx - nm.start;
-                            }}
-                            if (nm.start < idx + sentText.length && nm.end >= idx + sentText.length) {{
-                                endNode = nm.node;
-                                endOffset = (idx + sentText.length) - nm.start;
-                                break;
-                            }}
-                        }}
-                        
-                        if (startNode && endNode) {{
-                            try {{
-                                var range = document.createRange();
-                                range.setStart(startNode, startOffset);
-                                range.setEnd(endNode, endOffset);
-                                
-                                var span = document.createElement('span');
-                                span.className = 'tts-sentence';
-                                span.dataset.sid = sent.sid;
-                                
-                                range.surroundContents(span);
-                                
-                                console.log('[TTS] Wrapped sentence:', sent.sid);
-                            }} catch (e) {{
-                                console.log('[TTS] Error wrapping sentence:', e);
-                            }}
-                        }}
-                        
-                        searchPos = idx + sentText.length;
-                    }}
-                    
-                    console.log('[TTS] Finished wrapping', sentences.length, 'sentences');
-                }} catch (e) {{
-                    console.error('[TTS] Error in wrap function:', e);
-                }}
-            }})();
-            """
-            
-            self._execute_js(js)
-            print(f"[TTS] Wrapped {len(sentences)} sentences in DOM")
-            
-        except Exception as e:
-            print(f"[TTS] Error wrapping sentences: {e}")
-            import traceback
-            traceback.print_exc()
-
-            print(f"[TTS] Error handling speak request: {e}")
-            import traceback
-            traceback.print_exc()
-    
     def _on_bookmark_request(self, manager, js_result):
-        """Handle bookmark request from JavaScript context menu - uses annotation-style tracking."""
+        """Handle bookmark request from JavaScript context menu."""
         try:
             msg = js_result.to_string()
             import json
             data = json.loads(msg)
-            
-            # Get the text context (sentence + surrounding words)
-            selected_text = data.get('text', '')  # The sentence at click position
-            text_before = data.get('before', '')  # 20 words before
-            text_after = data.get('after', '')    # 20 words after
+            text_context = data.get('textContext', '')
             dom_path = data.get('path', '')
             
-            print(f"[BOOKMARK] 📌 Bookmark request from context menu")
-            print(f"[BOOKMARK]    Selected text length: {len(selected_text)}")
-            print(f"[BOOKMARK]    Selected preview: {selected_text[:50]}...")
-            print(f"[BOOKMARK]    Context before: {len(text_before)} chars")
-            print(f"[BOOKMARK]    Context after: {len(text_after)} chars")
-            print(f"[BOOKMARK]    DOM path: {dom_path}")
-            
-            if selected_text:
-                # Create bookmark using annotation-style tracking
+            if text_context:
+                # Create bookmark at the clicked position
                 import time
-                import uuid
                 bookmark = {
-                    'id': str(uuid.uuid4()),
                     'type': 'manual',
                     'chapter_index': self.current_index,
                     'chapter_title': self._get_chapter_title(self.current_index),
-                    'selected_text': selected_text,      # The sentence itself
-                    'text_before': text_before,          # Context before
-                    'text_after': text_after,            # Context after
+                    'text_context': text_context,
                     'dom_path': dom_path,
+                    'element_index': -1,
                     'timestamp': time.time(),
                     'note': ''
                 }
                 
                 self.bookmarks.append(bookmark)
-                print(f"[BOOKMARK] ✓ Added bookmark: {bookmark['chapter_title']}")
-                print(f"[BOOKMARK]    Total bookmarks now: {len(self.bookmarks)}")
-                
                 self._update_bookmarks_list()
-                print(f"[BOOKMARK] ✓ UI updated")
-                
                 self._save_bookmarks()
-                print(f"[BOOKMARK] ✓ Saved to disk")
-            else:
-                print(f"[BOOKMARK] ⚠️ No text context available!")
-                
+                print(f"[BOOKMARK] Added bookmark at clicked position")
         except Exception as e:
-            print(f"[BOOKMARK] ⚠️ Error handling bookmark request: {e}")
-            import traceback
-            traceback.print_exc()
-    
-    def _get_fallback_bookmark_text(self):
-        """Get fallback text for bookmark from current chapter."""
-        try:
-            if self.current_index < len(self.items):
-                content = self.items[self.current_index].get_content()
-                from bs4 import BeautifulSoup
-                soup = BeautifulSoup(content, 'html.parser')
-                
-                # Get first paragraph
-                para = soup.find('p')
-                if para:
-                    text = para.get_text().strip()
-                    return text[:500] if text else ''
-        except Exception as e:
-            print(f"[BOOKMARK] Error getting fallback text: {e}")
-        return ''
+            print(f"[BOOKMARK] Error handling bookmark request: {e}")
     
     # ============ END ANNOTATION SYSTEM ============
 
