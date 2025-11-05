@@ -6195,18 +6195,24 @@ class EPubViewer(Adw.ApplicationWindow):
                     let range = document.caretRangeFromPoint(e.clientX, e.clientY);
                     let clickedNode = range ? range.startContainer : target;
                     
-                    // Find parent paragraph or similar container
+                    // Find the main content container (entire chapter, not just paragraph)
+                    const mainContainer = document.querySelector('.ebook-content') || document.body;
+                    
+                    // Get full chapter text content
+                    const fullChapterText = mainContainer.textContent || '';
+                    
+                    // Find parent paragraph or similar container for the clicked sentence
                     let containerElem = target;
                     if (target.nodeType === Node.TEXT_NODE) {
                         containerElem = target.parentElement;
                     }
                     containerElem = containerElem.closest('p, div, section, article, li') || containerElem;
                     
-                    // Get full text content
-                    const fullText = containerElem.textContent || '';
+                    // Get paragraph text content (for finding clicked position)
+                    const paragraphText = containerElem.textContent || '';
                     
-                    // Find the offset of the clicked position in the full text
-                    let clickOffset = 0;
+                    // Find the offset of the clicked position within the paragraph
+                    let clickOffsetInParagraph = 0;
                     if (clickedNode.nodeType === Node.TEXT_NODE) {
                         // Walk through text nodes to find offset
                         const walker = document.createTreeWalker(
@@ -6217,53 +6223,68 @@ class EPubViewer(Adw.ApplicationWindow):
                         let node;
                         while (node = walker.nextNode()) {
                             if (node === clickedNode) {
-                                clickOffset += range.startOffset;
+                                clickOffsetInParagraph += range.startOffset;
                                 break;
                             }
-                            clickOffset += node.textContent.length;
+                            clickOffsetInParagraph += node.textContent.length;
                         }
                     }
                     
-                    // Find the start of the current sentence
-                    // Look backwards for sentence boundaries (. ! ?)
-                    let sentenceStart = 0;
-                    for (let i = clickOffset - 1; i >= 0; i--) {
-                        const char = fullText[i];
+                    // Find the start of the current sentence within the paragraph
+                    let sentenceStartInParagraph = 0;
+                    for (let i = clickOffsetInParagraph - 1; i >= 0; i--) {
+                        const char = paragraphText[i];
                         if (char === '.' || char === '!' || char === '?') {
                             // Skip if it's part of abbreviation (e.g., "Mr.")
-                            if (i < fullText.length - 1 && fullText[i + 1] === ' ') {
-                                sentenceStart = i + 1;
+                            if (i < paragraphText.length - 1 && paragraphText[i + 1] === ' ') {
+                                sentenceStartInParagraph = i + 1;
                                 break;
                             }
                         }
                     }
                     
-                    // Find the end of the current sentence
-                    let sentenceEnd = fullText.length;
-                    for (let i = clickOffset; i < fullText.length; i++) {
-                        const char = fullText[i];
+                    // Find the end of the current sentence within the paragraph
+                    let sentenceEndInParagraph = paragraphText.length;
+                    for (let i = clickOffsetInParagraph; i < paragraphText.length; i++) {
+                        const char = paragraphText[i];
                         if (char === '.' || char === '!' || char === '?') {
                             // Check if it's a sentence boundary
-                            if (i < fullText.length - 1 && fullText[i + 1] === ' ') {
-                                sentenceEnd = i + 1;
+                            if (i < paragraphText.length - 1 && paragraphText[i + 1] === ' ') {
+                                sentenceEndInParagraph = i + 1;
                                 break;
                             }
                         }
                     }
                     
-                    // Extract the current sentence
-                    const currentSentence = fullText.substring(sentenceStart, sentenceEnd).trim();
+                    // Extract the current sentence (for bookmark context)
+                    const currentSentence = paragraphText.substring(sentenceStartInParagraph, sentenceEndInParagraph).trim();
                     
-                    // Get 20 words before the sentence
-                    const textBeforeSentence = fullText.substring(0, sentenceStart).trim();
+                    // Now find where this sentence appears in the full chapter text
+                    const sentenceInChapterStart = fullChapterText.indexOf(currentSentence);
+                    
+                    // Get text from the sentence start to the END OF THE CHAPTER (not just paragraph)
+                    let textFromHere;
+                    if (sentenceInChapterStart >= 0) {
+                        textFromHere = fullChapterText.substring(sentenceInChapterStart).trim();
+                    } else {
+                        // Fallback: if we can't find the exact sentence, use from clicked paragraph onwards
+                        const paragraphInChapterStart = fullChapterText.indexOf(paragraphText);
+                        if (paragraphInChapterStart >= 0) {
+                            const absoluteStart = paragraphInChapterStart + sentenceStartInParagraph;
+                            textFromHere = fullChapterText.substring(absoluteStart).trim();
+                        } else {
+                            // Last resort: just use the paragraph text
+                            textFromHere = paragraphText.substring(sentenceStartInParagraph).trim();
+                        }
+                    }
+                    
+                    // Get 20 words before the sentence (from paragraph context)
+                    const textBeforeSentence = paragraphText.substring(0, sentenceStartInParagraph).trim();
                     const wordsBefore = textBeforeSentence.split(/\s+/).slice(-20).join(' ');
                     
-                    // Get 20 words after the sentence
-                    const textAfterSentence = fullText.substring(sentenceEnd).trim();
+                    // Get 20 words after the sentence (from paragraph context)
+                    const textAfterSentence = paragraphText.substring(sentenceEndInParagraph).trim();
                     const wordsAfter = textAfterSentence.split(/\s+/).slice(0, 20).join(' ');
-                    
-                    // Get text from the sentence start to the end (for TTS)
-                    const textFromHere = fullText.substring(sentenceStart).trim();
                     
                     // Get DOM path for bookmark
                     let elem = target;
@@ -9331,39 +9352,70 @@ class EPubViewer(Adw.ApplicationWindow):
                 except:
                     pass
                 
-                # Parse text into sentences for TTS
-                sentences = []
-                import re
-                # Split on sentence boundaries
-                raw_sentences = re.split(r'(?<=[.!?])\s+', text_content)
-                for i, sent in enumerate(raw_sentences):
-                    if sent.strip():
-                        sentences.append({
-                            'sid': f'speak_{i}',
-                            'text': sent.strip()
-                        })
+                # Get ALL sentences from the current chapter (same as play button)
+                all_sentences = self._collect_sentences_for_current_item()
                 
-                if sentences:
-                    print(f"[TTS] Starting playback with {len(sentences)} sentences")
+                if not all_sentences:
+                    print(f"[TTS] No sentences found in chapter")
+                    return
+                
+                print(f"[TTS] Found {len(all_sentences)} total sentences in chapter")
+                
+                # Find which sentence to start from by matching the clicked text
+                start_index = 0
+                clicked_text_normalized = ' '.join(text_content.split())[:100]  # First 100 chars, normalized
+                
+                for i, sent in enumerate(all_sentences):
+                    sent_text = sent.get('text', '')
+                    if clicked_text_normalized.startswith(sent_text.strip()):
+                        start_index = i
+                        print(f"[TTS] Matched start sentence at index {start_index}")
+                        break
+                
+                # If no exact match, try fuzzy matching
+                if start_index == 0 and not clicked_text_normalized.startswith(all_sentences[0].get('text', '').strip()):
+                    for i, sent in enumerate(all_sentences):
+                        sent_text = ' '.join(sent.get('text', '').split())
+                        if sent_text and sent_text in clicked_text_normalized:
+                            start_index = i
+                            print(f"[TTS] Fuzzy matched start sentence at index {start_index}")
+                            break
+                
+                print(f"[TTS] Will start playback from sentence {start_index} of {len(all_sentences)}")
+                
+                # Wrap ALL sentences in the DOM (same as play button)
+                # This ensures proper highlighting and scrolling
+                try:
+                    self._ensure_sentence_wrapping_and_start(all_sentences, auto_start=False)
                     
-                    # Wrap sentences in DOM for highlighting
-                    self._wrap_speak_sentences(sentences)
+                    # Now start TTS from the clicked sentence onwards
+                    sentences_to_play = all_sentences[start_index:]
                     
-                    # Small delay to let DOM update, then start TTS
-                    def start_tts():
-                        try:
-                            self.tts.speak_sentences_list(
-                                sentences,
-                                highlight_callback=self._on_tts_highlight,
-                                finished_callback=self._on_tts_finished
-                            )
-                        except Exception as e:
-                            print(f"[TTS] Error in speak_sentences_list: {e}")
-                        return False
-                    
-                    GLib.timeout_add(100, start_tts)
-                else:
-                    print(f"[TTS] No sentences to speak")
+                    if sentences_to_play:
+                        print(f"[TTS] Playing {len(sentences_to_play)} sentences from index {start_index}")
+                        
+                        # Start TTS after short delay so wrappers apply
+                        def start_tts():
+                            try:
+                                self.tts.speak_sentences_list(
+                                    sentences_to_play,
+                                    highlight_callback=self._on_tts_highlight,
+                                    finished_callback=self._on_tts_finished
+                                )
+                            except Exception as e:
+                                print(f"[TTS] Error in speak_sentences_list: {e}")
+                                import traceback
+                                traceback.print_exc()
+                            return False
+                        
+                        GLib.timeout_add(250, start_tts)
+                    else:
+                        print(f"[TTS] No sentences to play from index {start_index}")
+                        
+                except Exception as e:
+                    print(f"[TTS] Error in sentence wrapping: {e}")
+                    import traceback
+                    traceback.print_exc()
             else:
                 if not self.tts:
                     print(f"[TTS] TTS engine not available")
@@ -9503,10 +9555,6 @@ class EPubViewer(Adw.ApplicationWindow):
             
         except Exception as e:
             print(f"[TTS] Error wrapping sentences: {e}")
-            import traceback
-            traceback.print_exc()
-
-            print(f"[TTS] Error handling speak request: {e}")
             import traceback
             traceback.print_exc()
     
