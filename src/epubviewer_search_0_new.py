@@ -2050,7 +2050,6 @@ class EPubViewer(Adw.ApplicationWindow):
         # Enhanced Bookmarks and Annotations system
         self.bookmarks = []  # List of bookmark dicts
         self.annotations = []  # List of annotation dicts
-        self.current_search_query = None  # Store current search query for context menu
         self._loading_book = False  # Flag to prevent auto-save during book load
         
         # Bookmark format: {
@@ -2254,19 +2253,17 @@ class EPubViewer(Adw.ApplicationWindow):
         
         # Search box
         search_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-
-        self.dict_entry = Gtk.SearchEntry()
-        self.dict_entry.set_placeholder_text("Enter word to define…")
+        self.dict_entry = Gtk.Entry()
+        self.dict_entry.set_placeholder_text("Enter word to define...")
         self.dict_entry.set_hexpand(True)
         self.dict_entry.connect("activate", lambda e: self._lookup_dictionary_word())
         search_box.append(self.dict_entry)
-
+        
         dict_search_btn = Gtk.Button(label="Define")
         dict_search_btn.connect("clicked", lambda b: self._lookup_dictionary_word())
         search_box.append(dict_search_btn)
-
+        
         dict_box.append(search_box)
-
         
         # Placeholder for dictionary content - webview will be initialized later
         self.dict_scrolled = Gtk.ScrolledWindow()
@@ -2279,25 +2276,23 @@ class EPubViewer(Adw.ApplicationWindow):
         self.side_stack.add_titled(dict_box, "dictionary", "Dictionary")
 
         # --- Search tab ---
-        # Search entry box
         search_tab_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        search_tab_box.set_margin_top(6); search_tab_box.set_margin_bottom(6)
+        search_tab_box.set_margin_start(6); search_tab_box.set_margin_end(6)
+        
+        # Search entry box
         search_entry_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        search_tab_box.append(search_entry_box)
-        # Use Gtk.SearchEntry instead of Gtk.Entry
-        self.search_entry = Gtk.SearchEntry()
-        self.search_entry.set_placeholder_text("Search in book…")
+        self.search_entry = Gtk.Entry()
+        self.search_entry.set_placeholder_text("Search in book...")
         self.search_entry.set_hexpand(True)
         self.search_entry.connect("activate", lambda e: self._perform_search())
-
         search_entry_box.append(self.search_entry)
-
-        # Optional external Search button (can be kept for consistency)
+        
         search_btn = Gtk.Button(label="Search")
         search_btn.connect("clicked", lambda b: self._perform_search())
         search_entry_box.append(search_btn)
-
+        
         search_tab_box.append(search_entry_box)
-
         
         # Results info label
         self.search_info_label = Gtk.Label(label="")
@@ -3757,12 +3752,6 @@ class EPubViewer(Adw.ApplicationWindow):
             print("[TTS] Engine unavailable")
             return
 
-        # Clear search highlights that might interfere with TTS
-        try:
-            self._clear_search_highlights()
-        except:
-            pass
-
         sentences = self._collect_sentences_for_current_item()
         if not sentences:
             print("[TTS] No sentences to read")
@@ -4814,14 +4803,6 @@ class EPubViewer(Adw.ApplicationWindow):
 
     def show_library(self):
         self._disable_responsive_sidebar()
-        
-        # Clear EPUB search when going back to library
-        try:
-            if hasattr(self, 'search_entry'):
-                self._clear_search()
-        except Exception:
-            pass
-        
         try:
             self.split.set_show_sidebar(False)
         except Exception: pass
@@ -6245,25 +6226,10 @@ class EPubViewer(Adw.ApplicationWindow):
                     // Right-click without selection
                     e.preventDefault();
                     
-                    // Clear search highlights BEFORE any text extraction
-                    // This ensures we work with clean DOM
-                    const hadHighlights = document.querySelectorAll('.search-highlight').length > 0;
-                    if (hadHighlights) {
-                        console.log('[CONTEXT-MENU] Clearing search highlights before menu');
-                        var oldHighlights = document.querySelectorAll('.search-highlight');
-                        oldHighlights.forEach(function(el) {
-                            var parent = el.parentNode;
-                            while (el.firstChild) {
-                                parent.insertBefore(el.firstChild, el);
-                            }
-                            parent.removeChild(el);
-                        });
-                        var container = document.querySelector('.ebook-content') || document.body;
-                        container.normalize();
-                    }
-                    
-                    // Now work with completely clean DOM
+                    // Get clicked element and find the sentence
                     const target = e.target;
+                    
+                    // Get the text node at click position
                     let range = document.caretRangeFromPoint(e.clientX, e.clientY);
                     let clickedNode = range ? range.startContainer : target;
                     
@@ -6338,24 +6304,17 @@ class EPubViewer(Adw.ApplicationWindow):
                     let textFromHere;
                     if (sentenceInChapterStart >= 0) {
                         textFromHere = fullChapterText.substring(sentenceInChapterStart).trim();
-                        console.log('[CONTEXT-MENU] Found sentence in chapter at position:', sentenceInChapterStart);
                     } else {
                         // Fallback: if we can't find the exact sentence, use from clicked paragraph onwards
                         const paragraphInChapterStart = fullChapterText.indexOf(paragraphText);
                         if (paragraphInChapterStart >= 0) {
                             const absoluteStart = paragraphInChapterStart + sentenceStartInParagraph;
                             textFromHere = fullChapterText.substring(absoluteStart).trim();
-                            console.log('[CONTEXT-MENU] Using fallback: paragraph position in chapter');
                         } else {
                             // Last resort: just use the paragraph text
                             textFromHere = paragraphText.substring(sentenceStartInParagraph).trim();
-                            console.log('[CONTEXT-MENU] Using last resort: paragraph text only');
                         }
                     }
-                    
-                    console.log('[CONTEXT-MENU] Current sentence:', currentSentence.substring(0, 50));
-                    console.log('[CONTEXT-MENU] Text from here length:', textFromHere.length);
-                    console.log('[CONTEXT-MENU] Text from here preview:', textFromHere.substring(0, 100));
                     
                     // Get 20 words before the sentence (from paragraph context)
                     const textBeforeSentence = paragraphText.substring(0, sentenceStartInParagraph).trim();
@@ -7588,13 +7547,6 @@ class EPubViewer(Adw.ApplicationWindow):
             print("Error dialog:", message)
 
     def cleanup(self):
-        # Clear search when cleaning up
-        try:
-            if hasattr(self, 'search_entry'):
-                self._clear_search()
-        except Exception:
-            pass
-            
         if getattr(self, "temp_dir", None) and os.path.exists(self.temp_dir):
             try: shutil.rmtree(self.temp_dir)
             except Exception as e: print(f"Error cleaning up temp directory: {e}")
@@ -9180,9 +9132,6 @@ class EPubViewer(Adw.ApplicationWindow):
                 self.dict_entry.set_text(word)
                 # Switch to dictionary tab
                 self.side_stack.set_visible_child_name("dictionary")
-                # Activate dictionary tab button
-                if hasattr(self, 'tab_dict'):
-                    self.tab_dict.set_active(True)
                 # Lookup the word
                 self._lookup_dictionary_word()
         except Exception as e:
@@ -9425,29 +9374,6 @@ class EPubViewer(Adw.ApplicationWindow):
     
     # ============ SEARCH FUNCTIONALITY ============
     
-    
-    def _clear_search(self):
-        """Clear search entry and results."""
-        self.search_entry.set_text("")
-        self.current_search_query = None
-        self.search_info_label.set_text("")
-        
-        # Clear search results
-        while True:
-            row = self.search_listbox.get_row_at_index(0)
-            if row:
-                self.search_listbox.remove(row)
-            else:
-                break
-        
-        # Clear highlights from current page
-        try:
-            self._clear_search_highlights()
-        except:
-            pass
-        
-        print(f"[SEARCH] Cleared search")
-    
     def _perform_search(self):
         """Search through all EPUB content for the query."""
         query = self.search_entry.get_text().strip()
@@ -9460,9 +9386,6 @@ class EPubViewer(Adw.ApplicationWindow):
             self.search_info_label.set_text("No book loaded")
             return
         
-        # Store the search query for context menu use
-        self.current_search_query = query
-        
         print(f"[SEARCH] Searching for: '{query}'")
         self.search_info_label.set_text("Searching...")
         
@@ -9474,21 +9397,10 @@ class EPubViewer(Adw.ApplicationWindow):
             else:
                 break
         
-        # Normalize quotes for better matching
-        def normalize_quotes(text):
-            """Normalize all quote types to standard ASCII quotes."""
-            # Single quotes
-            text = text.replace(''', "'").replace(''', "'")
-            text = text.replace('`', "'").replace('´', "'")
-            # Double quotes  
-            text = text.replace('"', '"').replace('"', '"')
-            text = text.replace('„', '"').replace('‟', '"')
-            return text
-        
         # Perform search in background thread
         def search_thread():
             results = []
-            query_normalized = normalize_quotes(query.lower())
+            query_lower = query.lower()
             
             try:
                 for idx, item in enumerate(self.items):
@@ -9503,22 +9415,22 @@ class EPubViewer(Adw.ApplicationWindow):
                         
                         # Get text content
                         text = soup.get_text(separator=' ', strip=True)
-                        text_normalized = normalize_quotes(text.lower())
                         
-                        # Search for query (case-insensitive, quote-normalized)
-                        if query_normalized in text_normalized:
+                        # Search for query (case-insensitive)
+                        if query_lower in text.lower():
                             # Find all occurrences
+                            text_lower = text.lower()
                             pos = 0
                             occurrence = 0
                             
                             while True:
-                                pos = text_normalized.find(query_normalized, pos)
+                                pos = text_lower.find(query_lower, pos)
                                 if pos == -1:
                                     break
                                 
                                 occurrence += 1
                                 
-                                # Get context from original text (not normalized, for display)
+                                # Get context (50 chars before and after)
                                 start = max(0, pos - 50)
                                 end = min(len(text), pos + len(query) + 50)
                                 context = text[start:end]
@@ -9782,33 +9694,6 @@ class EPubViewer(Adw.ApplicationWindow):
         self._execute_js(js)
         print(f"[SEARCH] Highlighted '{query}' in current page")
     
-    def _clear_search_highlights(self):
-        """Clear all search highlights from the current page."""
-        if not self.webview:
-            return
-        
-        js = """
-        (function() {
-            try {
-                var oldHighlights = document.querySelectorAll('.search-highlight');
-                oldHighlights.forEach(function(el) {
-                    var parent = el.parentNode;
-                    while (el.firstChild) {
-                        parent.insertBefore(el.firstChild, el);
-                    }
-                    parent.removeChild(el);
-                    parent.normalize();
-                });
-                console.log('[SEARCH] Cleared search highlights');
-            } catch (e) {
-                console.error('[SEARCH] Error clearing highlights:', e);
-            }
-        })();
-        """
-        
-        self._execute_js(js)
-        print(f"[SEARCH] Cleared search highlights")
-    
     # ============ END SEARCH FUNCTIONALITY ============
     
     def _on_speak_request(self, manager, js_result):
@@ -9825,13 +9710,7 @@ class EPubViewer(Adw.ApplicationWindow):
                 # Stop current TTS if playing and clear highlights
                 try:
                     self.tts.stop()
-                    self._on_tts_finished()  # Clear any existing TTS highlights
-                except:
-                    pass
-                
-                # Clear search highlights that might interfere with TTS
-                try:
-                    self._clear_search_highlights()
+                    self._on_tts_finished()  # Clear any existing highlights
                 except:
                     pass
                 
@@ -9844,46 +9723,25 @@ class EPubViewer(Adw.ApplicationWindow):
                 
                 print(f"[TTS] Found {len(all_sentences)} total sentences in chapter")
                 
-                # Debug: show first few sentences
-                if all_sentences:
-                    print(f"[TTS] First sentence: '{all_sentences[0].get('text', '')[:50]}...'")
-                    if len(all_sentences) > 1:
-                        print(f"[TTS] Second sentence: '{all_sentences[1].get('text', '')[:50]}...'")
-                
                 # Find which sentence to start from by matching the clicked text
                 start_index = 0
                 clicked_text_normalized = ' '.join(text_content.split())[:100]  # First 100 chars, normalized
-                print(f"[TTS] Clicked text (normalized, first 100 chars): '{clicked_text_normalized}'")
                 
                 for i, sent in enumerate(all_sentences):
                     sent_text = sent.get('text', '')
                     if clicked_text_normalized.startswith(sent_text.strip()):
                         start_index = i
                         print(f"[TTS] Matched start sentence at index {start_index}")
-                        print(f"[TTS] Matched sentence text: '{sent_text[:50]}...'")
                         break
                 
                 # If no exact match, try fuzzy matching
                 if start_index == 0 and not clicked_text_normalized.startswith(all_sentences[0].get('text', '').strip()):
-                    print(f"[TTS] No exact match, trying fuzzy matching...")
                     for i, sent in enumerate(all_sentences):
                         sent_text = ' '.join(sent.get('text', '').split())
                         if sent_text and sent_text in clicked_text_normalized:
                             start_index = i
                             print(f"[TTS] Fuzzy matched start sentence at index {start_index}")
-                            print(f"[TTS] Matched sentence text: '{sent_text[:50]}...'")
                             break
-                    
-                    # Try reverse fuzzy matching - see if clicked text is in any sentence
-                    if start_index == 0:
-                        print(f"[TTS] Trying reverse fuzzy matching...")
-                        for i, sent in enumerate(all_sentences):
-                            sent_text = ' '.join(sent.get('text', '').split())
-                            if sent_text and clicked_text_normalized[:30] in sent_text:
-                                start_index = i
-                                print(f"[TTS] Reverse fuzzy matched at index {start_index}")
-                                print(f"[TTS] Matched sentence text: '{sent_text[:50]}...'")
-                                break
                 
                 print(f"[TTS] Will start playback from sentence {start_index} of {len(all_sentences)}")
                 
