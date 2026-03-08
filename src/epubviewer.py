@@ -5952,16 +5952,16 @@ class EPubViewer(Adw.ApplicationWindow):
                     // Calculate TOTAL columns in the entire document
                     const totalColumns = Math.max(1, Math.round(scrollWidth / pageWidth));
                     
-                    // Maximum column index we can navigate to
-                    // In multi-column mode, exclude the last column (spacer) from navigation
+                    // Maximum column index we can scroll to:
+                    // We scroll by viewportColCount columns at a time, so the last
+                    // valid start-column = totalContentColumns - viewportColCount
                     const spacer = document.querySelector('.extra-column-spacer');
                     const hasSpacerColumn = spacer && window.getComputedStyle(spacer).display !== 'none';
-                    const maxCol = hasSpacerColumn ? Math.max(0, totalColumns - 3) : totalColumns - 3;
+                    const spacerCols = hasSpacerColumn ? 1 : 0;
+                    const contentColumns = totalColumns - spacerCols;
+                    const maxCol = Math.max(0, contentColumns - viewportColCount);
                     
-                    if (hasSpacerColumn) {{
-                        console.log('📊 Column metrics: total=' + totalColumns + ', maxCol=' + maxCol + ' (excluded spacer column)');
-                    }}
-                    
+                    console.log('📊 Column metrics: total=' + totalColumns + ', content=' + contentColumns + ', viewport=' + viewportColCount + ', maxCol=' + maxCol + (hasSpacerColumn ? ' (has spacer)' : ''));
                     
                     return {{
                         container: container,
@@ -5995,17 +5995,13 @@ class EPubViewer(Adw.ApplicationWindow):
                     const targetCol = Math.max(0, Math.min(index, metrics.maxCol));
                     const targetScroll = targetCol * metrics.pageWidth;
                     
-                    // Also ensure we don't scroll past actual content (excluding spacer)
-                    const maxScroll = metrics.container.scrollWidth - metrics.clientWidth;
-                    const clampedScroll = Math.min(targetScroll, maxScroll);
-                    
                     if (smooth) {{
-                        smoothScrollTo(clampedScroll, metrics.container.scrollTop);
+                        smoothScrollTo(targetScroll, metrics.container.scrollTop);
                     }} else {{
-                        metrics.container.scrollLeft = clampedScroll;
+                        metrics.container.scrollLeft = targetScroll;
                     }}
                     
-                    console.log('→ Column ' + targetCol + ' (scroll: ' + clampedScroll.toFixed(0) + 'px, max: ' + metrics.maxCol + ')');
+                    console.log('→ Column ' + targetCol + ' (scroll: ' + targetScroll.toFixed(0) + 'px, max: ' + metrics.maxCol + ')');
                 }};
                 
                 function smoothScrollTo(xTarget, yTarget) {{
@@ -6046,13 +6042,9 @@ class EPubViewer(Adw.ApplicationWindow):
                     const clampedIndex = Math.max(0, Math.min(columnIndex, metrics.maxCol));
                     const targetScroll = clampedIndex * metrics.pageWidth;
                     
-                    // Also ensure we don't snap past actual content
-                    const maxScroll = metrics.container.scrollWidth - metrics.clientWidth;
-                    const finalScroll = Math.min(targetScroll, maxScroll);
-                    
-                    if (Math.abs(finalScroll - currentScroll) > 2) {{
-                        console.log('↹ Snap to col ' + clampedIndex + ' (' + currentScroll.toFixed(0) + '→' + finalScroll.toFixed(0) + ')');
-                        metrics.container.scrollLeft = finalScroll;
+                    if (Math.abs(targetScroll - currentScroll) > 2) {{
+                        console.log('↹ Snap to col ' + clampedIndex + ' (' + currentScroll.toFixed(0) + '→' + targetScroll.toFixed(0) + ')');
+                        metrics.container.scrollLeft = targetScroll;
                     }}
                 }}
                 
