@@ -2061,18 +2061,7 @@ class EPubRenderer:
         
         return results
     
-    def cleanup(self):
-        """Clean up temporary resources."""
-        if self.temp_dir and os.path.exists(self.temp_dir):
-            try:
-                shutil.rmtree(self.temp_dir)
-            except Exception:
-                pass
-        
-        self.book = None
-        self.items = []
-        self.item_map = {}
-        self.href_map = {}
+    # EPubRenderer.cleanup removed because it was redundant and potentially conflicting
 
 
 
@@ -3106,55 +3095,60 @@ class EPubViewer(Adw.ApplicationWindow):
         except Exception as e:
             print(f"[SCROLL] ⚠️ Error receiving scroll position: {e}")
 
-    # ---------- minimal TTS control methods ----------
-    def update_webview_theme(self):
-        global page_bg, text_fg
-        global page_bg_light, text_fg_light, page_bg_dark, text_fg_dark
-
-        style_manager = Adw.StyleManager.get_default()
-        is_dark = style_manager.get_dark()
-
-        if is_dark:
-            try:
-                page_bg = page_bg_dark
-                text_fg = text_fg_dark
-            except NameError:
-                pass
-        else:
-            try:
-                page_bg = page_bg_light
-                text_fg = text_fg_light
-            except NameError:
-                pass
 
     def update_webview_theme(self):
         """Inject current theme colors into webview via JavaScript."""
-        if not getattr(self, "webview", None):
+        if not getattr(self, "webview", None) or not getattr(self, "book", None):
             return
-
+        
         # Use current instance colors
         bg = getattr(self, "current_page_bg", "#ffffff")
         fg = getattr(self, "current_text_fg", "#000000")
+        
+        print(f"🎨 Injecting theme colors into WebView: bg={bg}, fg={fg}")
 
         try:
             js = f"""
                 (function() {{
-                    const html = document.documentElement;
-                    const body = document.body;
-                    const ec = document.querySelector('.ebook-content');
-                    
-                    const apply = (el) => {{
-                        if (!el) return;
-                        el.style.setProperty('background-color', '{bg}', 'important');
-                        el.style.setProperty('color', '{fg}', 'important');
-                        el.style.setProperty('background', '{bg}', 'important');
+                    const applyTheme = () => {{
+                        const bg = '{bg}';
+                        const fg = '{fg}';
+                        
+                        const targets = [
+                            document.documentElement,
+                            document.body,
+                            document.querySelector('.ebook-content'),
+                            ...Array.from(document.querySelectorAll('*[style*="background-color"]'))
+                        ];
+                        
+                        targets.forEach(el => {{
+                            if (!el) return;
+                            el.style.setProperty('background-color', bg, 'important');
+                            el.style.setProperty('color', fg, 'important');
+                            el.style.setProperty('background', bg, 'important');
+                        }});
+
+                        // Set a global CSS override as well
+                        let s = document.getElementById('theme-js-override');
+                        if (!s) {{
+                            s = document.createElement('style');
+                            s.id = 'theme-js-override';
+                            document.head.appendChild(s);
+                        }}
+                        s.textContent = `
+                            html, body, .ebook-content {{
+                                background-color: ${{bg}} !important;
+                                background: ${{bg}} !important;
+                                color: ${{fg}} !important;
+                            }}
+                            * {{
+                                border-color: rgba(128,128,128,0.2) !important;
+                            }}
+                        `;
                     }};
                     
-                    apply(html);
-                    apply(body);
-                    apply(ec);
-                    
-                    return "theme_updated";
+                    applyTheme();
+                    return "theme_updated_robustly";
                 }})();
             """
             self.webview.evaluate_javascript(js, -1, None, None, None, None, None)
@@ -3180,8 +3174,17 @@ class EPubViewer(Adw.ApplicationWindow):
             if hasattr(self, "global_settings"):
                 self.global_settings["user_theme"] = theme_name
                 self.library_manager.save_global_settings(self.global_settings)
+            
+            # Also save to current book settings if a book is open
+            if getattr(self, "book_path", None):
+                # We need to make sure we're saving it to the book settings too
+                # so it's not overridden by stale values if settings are re-loaded
+                book_settings = self.library_manager.load_book_settings(self.book_path) or {}
+                book_settings["user_theme"] = theme_name
+                self.library_manager.save_book_settings(self.book_path, book_settings)
+                print(f"🎨 Theme '{theme_name}' saved to book settings for: {os.path.basename(self.book_path)}")
         except Exception as e:
-            print(f"Error saving theme globally: {e}")
+            print(f"Error saving theme: {e}")
 
         is_dark_pref = self.style_manager.get_dark()
 
@@ -5326,6 +5329,8 @@ class EPubViewer(Adw.ApplicationWindow):
             # Trigger column snapping after sidebar animation
             if self.book and self.items and self.webview:
                 GLib.timeout_add(450, self._snap_to_current_column)
+                # Also ensure theme is re-applied after layout change
+                GLib.timeout_add(500, self.update_webview_theme)
             
         except Exception as e:
             print(f"Sidebar toggle error: {e}")
@@ -5389,6 +5394,9 @@ class EPubViewer(Adw.ApplicationWindow):
                 else:
                     self.split.set_collapsed(False)
                     self.split.set_show_sidebar(True)
+                
+                # Also ensure theme is re-applied after layout change
+                GLib.timeout_add(500, self.update_webview_theme)
                 
                 # Browser resize event will automatically fire and maintain column position
                 print(f"🔄 Responsive change - letting resize handler maintain position")
