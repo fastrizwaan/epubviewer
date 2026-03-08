@@ -162,12 +162,8 @@ _CSS_LIGHT = f"""
   background-color: #f1f2e5;
 }}
 .sidebar-cover {{
-  width: 70px;
-  height: 105px;
   min-width: 70px;
   min-height: 105px;
-  max-width: 70px;
-  max-height: 105px;
   border-radius: 4px;
   box-shadow: 0 4px 10px rgba(0,0,0,0.2);
   margin-right: 12px;
@@ -3299,12 +3295,8 @@ class EPubViewer(Adw.ApplicationWindow):
                 font-size: 12px;
             }}
             .sidebar-cover {{
-                width: {COVER_W}px;
-                height: {COVER_H}px;
                 min-width: {COVER_W}px;
                 min-height: {COVER_H}px;
-                max-width: {COVER_W}px;
-                max-height: {COVER_H}px;
                 border-radius: 4px;
                 box-shadow: 0 4px 10px {shadow};
                 margin-right: 12px;
