@@ -22,8 +22,7 @@ APP_NAME = "EPUB Viewer"
 os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
 
 # cover target size for sidebar (small)
-COVER_W, COVER_H = 70, 100
-
+COVER_W, COVER_H = 50, 80
 # persistent library locations & library cover save size
 LIBRARY_DIR = os.path.join(GLib.get_user_data_dir(), "epubviewer")
 LIBRARY_FILE = os.path.join(LIBRARY_DIR, "library.json")
@@ -162,8 +161,20 @@ _CSS_LIGHT = f"""
 .epub-sidebar .adw-action-row {{
   background-color: #f1f2e5;
 }}
+.sidebar-cover {{
+  width: 70px;
+  height: 105px;
+  min-width: 70px;
+  min-height: 105px;
+  max-width: 70px;
+  max-height: 105px;
+  border-radius: 4px;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+  margin-right: 12px;
+}}
 .book-title {{
   font-weight: 600;
+  font-size: 14px;
 }}
 .book-author {{
   color: rgba(0,0,0,0.6);
@@ -190,8 +201,14 @@ _CSS_DARK = f"""
 .epub-sidebar .adw-action-row {{
   background-color: rgba(255,255,255,0.08);
 }}
+.sidebar-cover {{
+  border-radius: 4px;
+  box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+  margin-left: 12px;
+}}
 .book-title {{
   font-weight: 600;
+  font-size: 14px;
 }}
 .book-author {{
   color: rgba(255,255,255,0.7);
@@ -2157,20 +2174,28 @@ class EPubViewer(Adw.ApplicationWindow):
         header.set_title_widget(title_lbl); sidebar_box.append(header)
 
         # Book cover + metadata
-        book_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=1)
+        book_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=0)
         book_box.set_valign(Gtk.Align.CENTER)
-        book_box.set_margin_top(0); book_box.set_margin_bottom(0)
-        book_box.set_margin_start(8); book_box.set_margin_end(8)
-        self.cover_image = Gtk.Image()
+        book_box.set_margin_top(8); book_box.set_margin_bottom(8)
+        book_box.set_margin_start(10); book_box.set_margin_end(10)
+        self.cover_image = Gtk.Picture()
+        self.cover_image.add_css_class("sidebar-cover")
+        self.cover_image.set_content_fit(Gtk.ContentFit.CONTAIN)
+        self.cover_image.set_valign(Gtk.Align.CENTER)
+        self.cover_image.set_halign(Gtk.Align.START)
+        self.cover_image.set_hexpand(False)
+        self.cover_image.set_vexpand(False)
+        
         placeholder_pb = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, COVER_W, COVER_H)
         # Use new API instead of deprecated new_for_pixbuf
         from gi.repository import Gdk
         placeholder_tex = Gdk.Texture.new_for_pixbuf(placeholder_pb) if hasattr(Gdk.Texture, 'new_for_pixbuf') else None
         if placeholder_tex:
-            self.cover_image.set_from_paintable(placeholder_tex)
+            self.cover_image.set_paintable(placeholder_tex)
         else:
             # Fallback for newer GTK versions
-            self.cover_image.set_from_pixbuf(placeholder_pb)
+            tex = Gdk.Texture.new_for_pixbuf(placeholder_pb)
+            self.cover_image.set_paintable(tex)
         try:
             self.cover_image.set_size_request(COVER_W, COVER_H)
         except Exception:
@@ -7057,7 +7082,7 @@ class EPubViewer(Adw.ApplicationWindow):
                 if cover_path_to_use and os.path.exists(cover_path_to_use):
                     try:
                         pix = GdkPixbuf.Pixbuf.new_from_file_at_scale(cover_path_to_use, COVER_W, COVER_H, True)
-                        tex = Gdk.Texture.new_for_pixbuf(pix); self.cover_image.set_from_paintable(tex)
+                        tex = Gdk.Texture.new_for_pixbuf(pix); self.cover_image.set_paintable(tex)
                         try: self.cover_image.set_size_request(COVER_W, COVER_H)
                         except Exception: pass
                         self.last_cover_path = cover_path_to_use
@@ -7068,7 +7093,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     placeholder_pb = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, COVER_W, COVER_H)
                     placeholder_pb.fill(0xddddddff)
                     placeholder_tex = Gdk.Texture.new_for_pixbuf(placeholder_pb)
-                    self.cover_image.set_from_paintable(placeholder_tex)
+                    self.cover_image.set_paintable(placeholder_tex)
                     try: self.cover_image.set_size_request(COVER_W, COVER_H)
                     except Exception: pass
             except Exception:
@@ -7896,7 +7921,7 @@ class EPubViewer(Adw.ApplicationWindow):
         try:
             placeholder_pb = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, COVER_W, COVER_H)
             placeholder_pb.fill(0xddddddff)
-            self.cover_image.set_from_paintable(Gdk.Texture.new_for_pixbuf(placeholder_pb))
+            self.cover_image.set_paintable(Gdk.Texture.new_for_pixbuf(placeholder_pb))
         except Exception:
             pass
         try:
