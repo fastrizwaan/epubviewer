@@ -173,7 +173,7 @@ _CSS_LIGHT = f"""
   margin-right: 12px;
 }}
 .book-title {{
-  font-weight: 600;
+  font-weight: bold;
   font-size: 14px;
 }}
 .book-author {{
@@ -207,7 +207,7 @@ _CSS_DARK = f"""
   margin-left: 12px;
 }}
 .book-title {{
-  font-weight: 600;
+  font-weight: bold;
   font-size: 14px;
 }}
 .book-author {{
@@ -3282,12 +3282,33 @@ class EPubViewer(Adw.ApplicationWindow):
         # Fix JS ternary-style in CSS string (replace with actual values)
         hover_bg = "rgba(255,255,255,0.1)" if is_dark_pref else "rgba(0,0,0,0.06)"
         sel_bg = "rgba(255,255,255,0.15)" if is_dark_pref else "rgba(0,0,0,0.12)"
+        author_fg = "rgba(0,0,0,0.6)" if not is_dark_pref else "rgba(255,255,255,0.7)"
+        shadow = "rgba(0,0,0,0.2)" if not is_dark_pref else "rgba(0,0,0,0.3)"
         
         css = f"""
             .pg-bg {{ background-color: {self.current_page_bg}; color: {self.current_text_fg}; }}
             .epub-sidebar {{ background-color: {self.sidebar_bg}; color: {ui_fg}; }}
             .epub-sidebar .adw-action-row:hover {{ background-color: {hover_bg}; }}
             .epub-sidebar .adw-action-row.selected {{ background-color: {sel_bg}; }}
+            .book-title {{
+                font-weight: bold;
+                font-size: 14px;
+            }}
+            .book-author {{
+                color: {author_fg};
+                font-size: 12px;
+            }}
+            .sidebar-cover {{
+                width: {COVER_W}px;
+                height: {COVER_H}px;
+                min-width: {COVER_W}px;
+                min-height: {COVER_H}px;
+                max-width: {COVER_W}px;
+                max-height: {COVER_H}px;
+                border-radius: 4px;
+                box-shadow: 0 4px 10px {shadow};
+                margin-right: 12px;
+            }}
             popover > contents, popover menu {{ background-color: {self.current_page_bg}; color: {self.current_text_fg}; }}
         """
 
