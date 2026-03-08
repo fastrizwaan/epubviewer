@@ -10,3 +10,4 @@ src/__pycache__
 build
 epubviewer.egg-info
 src/epubviewer.egg-info
+test

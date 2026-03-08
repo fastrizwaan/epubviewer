@@ -5526,7 +5526,10 @@ class EPubViewer(Adw.ApplicationWindow):
             href = item.href or ""
             fragment = href.split("#", 1)[1] if "#" in href else None
             if isinstance(item.index, int) and item.index >= 0:
-                self.current_index = item.index; self.update_navigation(); self.display_page(fragment=fragment)
+                if fragment and item.index == getattr(self, 'current_index', -1):
+                    self._scroll_to_fragment(fragment)
+                else:
+                    self.current_index = item.index; self.update_navigation(); self.display_page(fragment=fragment)
             elif href:
                 try:
                     base = urllib.parse.unquote(href.split("#", 1)[0])
@@ -5596,7 +5599,10 @@ class EPubViewer(Adw.ApplicationWindow):
                     href = it.href or ""
                     fragment = href.split("#", 1)[1] if "#" in href else None
                     if isinstance(it.index, int) and it.index >= 0:
-                        self.current_index = it.index; self.update_navigation(); self.display_page(fragment=fragment)
+                        if fragment and it.index == getattr(self, 'current_index', -1):
+                            self._scroll_to_fragment(fragment)
+                        else:
+                            self.current_index = it.index; self.update_navigation(); self.display_page(fragment=fragment)
                     elif href:
                         try:
                             base = urllib.parse.unquote(href.split("#", 1)[0])
@@ -7414,7 +7420,7 @@ class EPubViewer(Adw.ApplicationWindow):
                 html_content = self._wrap_html(body_content, base_uri)
                 if self.webview:
                     self.webview.load_html(html_content, base_uri)
-                    if fragment: GLib.timeout_add(100, lambda: self._scroll_to_fragment(fragment))
+                    if fragment: GLib.timeout_add(300, lambda: self._scroll_to_fragment(fragment))
 
 
                 else:
@@ -7507,7 +7513,7 @@ class EPubViewer(Adw.ApplicationWindow):
                         self.webview.load_html(wrapped_html, "")
 
                     if fragment:
-                        GLib.timeout_add(100, lambda: self._scroll_to_fragment(fragment))
+                        GLib.timeout_add(300, lambda: self._scroll_to_fragment(fragment))
                     
                     # If TTS was playing, re-wrap sentences and restore highlight
                     if tts_was_playing and current_tts_index >= 0 and current_tts_sentences:
@@ -7815,7 +7821,56 @@ class EPubViewer(Adw.ApplicationWindow):
 
     def _scroll_to_fragment(self, fragment):
         if self.webview and fragment:
-            js_code = f"var element = document.getElementById('{fragment}'); if (element) {{ element.scrollIntoView({{behavior:'smooth', block:'start'}}); }}"
+            safe_frag = fragment.replace("'", "\\'").replace("\\", "\\\\")
+            js_code = f"""
+            (function() {{
+                var frag = '{safe_frag}';
+                var el = document.getElementById(frag);
+                if (!el) {{
+                    try {{ el = document.querySelector('[id=\"' + frag + '\"]'); }} catch(e) {{}}
+                }}
+                if (!el) {{
+                    try {{ el = document.querySelector('a[name=\"' + frag + '\"]'); }} catch(e) {{}}
+                }}
+                if (!el) {{
+                    console.log('Fragment not found: ' + frag);
+                    return;
+                }}
+                console.log('Found fragment element: ' + frag);
+
+                // Check if we're in multi-column mode
+                if (window.isSingleColumnMode) {{
+                    el.scrollIntoView({{behavior:'smooth', block:'start'}});
+                    return;
+                }}
+
+                var metrics = typeof getContainerMetrics === 'function' ? getContainerMetrics() : null;
+                if (!metrics || metrics.colCount <= 1) {{
+                    el.scrollIntoView({{behavior:'smooth', block:'start'}});
+                    return;
+                }}
+
+                // Calculate which column the element is in
+                var container = metrics.container;
+                var rect = el.getBoundingClientRect();
+                var containerRect = container.getBoundingClientRect();
+
+                // Element's position relative to container content (accounting for scroll)
+                var elementLeft = rect.left - containerRect.left + container.scrollLeft;
+
+                // Determine which column this falls in
+                var colIndex = Math.floor(elementLeft / metrics.pageWidth);
+                colIndex = Math.max(0, Math.min(colIndex, metrics.maxCol));
+
+                console.log('Fragment "' + frag + '" is in column ' + colIndex + ' (offsetLeft=' + elementLeft.toFixed(0) + ', pageWidth=' + metrics.pageWidth.toFixed(0) + ')');
+
+                if (typeof scrollToColumnIndex === 'function') {{
+                    scrollToColumnIndex(colIndex, true);
+                }} else {{
+                    container.scrollLeft = colIndex * metrics.pageWidth;
+                }}
+            }})();
+            """
             try:
                 self.webview.evaluate_javascript(js_code, -1, None, None, None, None, None)
             except Exception:
