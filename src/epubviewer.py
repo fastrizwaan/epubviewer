@@ -49,6 +49,7 @@ DEFAULT_SETTINGS = {
     "page_margin_bottom": 50,
     "page_margin_left": 50,
     "margins_linked": True,
+    "user_theme": "Default",
 }
 
 def _ensure_library_dir():  
@@ -106,30 +107,97 @@ def load_book_settings(book_path):
         print(f"Error loading book settings: {e}")
         return None
 
+################## Colors
+def darken(hex_color: str, factor: float = 0.9) -> str:
+    """Return a darker hex color by multiplying RGB channels by `factor` (0–1)."""
+    hex_color = hex_color.lstrip("#")
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+    r = int(r * factor)
+    g = int(g * factor)
+    b = int(b * factor)
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+def invert_color(hex_color: str, preserve_luminance: bool = True) -> str:
+    """Return an inverted hex color. Optionally preserve perceived luminance."""
+    hex_color = hex_color.lstrip("#")
+    r = int(hex_color[0:2], 16)
+    g = int(hex_color[2:4], 16)
+    b = int(hex_color[4:6], 16)
+
+    if preserve_luminance:
+        # Perceptual luminance using Rec. 709 coefficients
+        lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
+        ir, ig, ib = 255 - r, 255 - g, 255 - b
+        inv_lum = 0.2126 * ir + 0.7152 * ig + 0.0722 * ib
+        # Scale inverted color so luminance matches original
+        scale = lum / inv_lum if inv_lum else 1
+        r = max(0, min(255, int(ir * scale)))
+        g = max(0, min(255, int(ig * scale)))
+        b = max(0, min(255, int(ib * scale)))
+    else:
+        r, g, b = 255 - r, 255 - g, 255 - b
+
+    return f"#{r:02x}{g:02x}{b:02x}"
+
+##############
+
 # CSS (short) - removed unsupported text-align properties
-_css = """
-.epub-sidebar .adw-action-row {
-  margin: 5px;
-  padding: 6px;
-  border-radius: 8px;
-  background-color: transparent;
-}
-.epub-sidebar .adw-action-row:hover {
-  background-color: rgba(0,0,0,0.06);
-}
-.epub-sidebar .adw-action-row.selected {
+# --- Light theme CSS ---
+_CSS_LIGHT = f"""
+.pg-bg {{
+  background-color: @theme_bg;
+  color: @theme_fg;
+}}
+.epub-sidebar {{
   background-color: rgba(0,0,0,0.12);
-}
-.book-title { font-weight: 600; }
-.book-author { color: rgba(0,0,0,0.6); font-size: 12px; }
+}}
+.epub-sidebar .adw-action-row:hover {{
+  background-color: rgba(0,0,0,0.06);
+}}
+.epub-sidebar .adw-action-row.selected {{
+  background-color: rgba(0,0,0,0.12);
+}}
+.epub-sidebar .adw-action-row {{
+  background-color: #f1f2e5;
+}}
+.book-title {{
+  font-weight: 600;
+}}
+.book-author {{
+  color: rgba(0,0,0,0.6);
+  font-size: 12px;
+}}
 """
-_css_provider = Gtk.CssProvider()
-_css_provider.load_from_data(_css.encode("utf-8"))
-Gtk.StyleContext.add_provider_for_display(
-    Gdk.Display.get_default(),
-    _css_provider,
-    Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION,
-)
+
+# --- Dark theme CSS ---
+_CSS_DARK = f"""
+.pg-bg {{
+  background-color: @theme_bg;
+  color: @theme_fg;
+}}
+.epub-sidebar {{
+  background-color: rgba(0,0,0,0.12);
+
+}}
+.epub-sidebar .adw-action-row:hover {{
+  background-color: rgba(255,255,255,0.1);
+}}
+.epub-sidebar .adw-action-row.selected {{
+  background-color: rgba(255,255,255,0.15);
+}}
+.epub-sidebar .adw-action-row {{
+  background-color: rgba(255,255,255,0.08);
+}}
+.book-title {{
+  font-weight: 600;
+}}
+.book-author {{
+  color: rgba(255,255,255,0.7);
+  font-size: 12px;
+}}
+"""
 
 _LIBRARY_CSS = b"""
 .library-grid { padding: 1px; }
@@ -190,6 +258,13 @@ _LIBRARY_HOVER_DARK = b"""
 }
 """
 
+# --- GTK CSS Providers ---
+_css_light_provider = Gtk.CssProvider()
+_css_light_provider.load_from_data(_CSS_LIGHT)
+
+_css_dark_provider = Gtk.CssProvider()
+_css_dark_provider.load_from_data(_CSS_DARK)
+
 _hover_light_provider = Gtk.CssProvider()
 _hover_light_provider.load_from_data(_LIBRARY_HOVER_LIGHT)
 _hover_dark_provider = Gtk.CssProvider()
@@ -215,44 +290,8 @@ _dark_override_css = """
 _dark_provider = Gtk.CssProvider()
 _dark_provider.load_from_data(_dark_override_css.encode("utf-8"))
 settings = Gtk.Settings.get_default()
-def _update_gtk_dark_provider(settings, pspec=None):
-    try:
-        if settings.get_property("gtk-application-prefer-dark-theme"):
-            Gtk.StyleContext.add_provider_for_display(
-                Gdk.Display.get_default(), _dark_provider,
-                Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 1)
-            try:
-                Gtk.StyleContext.add_provider_for_display(
-                    Gdk.Display.get_default(), _hover_dark_provider,
-                    Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2)
-            except Exception:
-                pass
-            try:
-                Gtk.StyleContext.remove_provider_for_display(
-                    Gdk.Display.get_default(), _hover_light_provider)
-            except Exception:
-                pass
-        else:
-            Gtk.StyleContext.remove_provider_for_display(
-                Gdk.Display.get_default(), _dark_provider)
-            try:
-                Gtk.StyleContext.add_provider_for_display(
-                    Gdk.Display.get_default(), _hover_light_provider,
-                    Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION + 2)
-            except Exception:
-                pass
-            try:
-                Gtk.StyleContext.remove_provider_for_display(
-                    Gdk.Display.get_default(), _hover_dark_provider)
-            except Exception:
-                pass
-    except Exception:
-        pass
-try:
-    settings.connect("notify::gtk-application-prefer-dark-theme", _update_gtk_dark_provider)
-except Exception:
-    pass
-_update_gtk_dark_provider(settings)
+# System theme handling moved to EPubViewer class
+
 
 class TocItem(GObject.Object):
     title = GObject.Property(type=str)
@@ -390,10 +429,11 @@ class TTSEngine:
         # --------------------------------------------------
         # Select Backend (priority: Kokoro > Piper)
         # --------------------------------------------------
-        if self.PIPER_AVAILABLE:
-            self._tts_backend = "piper"
-        elif self.Kokoro:
+        if self.Kokoro:
             self._tts_backend = "kokoro"
+        elif self.PIPER_AVAILABLE:
+            self._tts_backend = "piper"
+
 
         # --------------------------------------------------
         # Initialize Kokoro if selected
@@ -1160,6 +1200,7 @@ class LibraryManager:
         """
         self.library_dir = library_dir or os.path.join(GLib.get_user_data_dir(), "epubviewer")
         self.library_file = os.path.join(self.library_dir, "library.json")
+        self.global_settings_file = os.path.join(self.library_dir, "settings.json")
         self.covers_dir = os.path.join(self.library_dir, "covers")
         self.book_settings_dir = os.path.join(self.library_dir, "book_settings")
         
@@ -1379,6 +1420,25 @@ class LibraryManager:
         except Exception as e:
             print(f"Error loading book settings: {e}")
             return None
+
+    def load_global_settings(self):
+        """Load global application settings."""
+        if os.path.exists(self.global_settings_file):
+            try:
+                with open(self.global_settings_file, "r", encoding="utf-8") as fh:
+                    return json.load(fh)
+            except Exception as e:
+                print(f"Error loading global settings: {e}")
+                return {}
+        return {}
+
+    def save_global_settings(self, settings):
+        """Save global application settings."""
+        try:
+            with open(self.global_settings_file, "w", encoding="utf-8") as fh:
+                json.dump(settings, fh, indent=2, ensure_ascii=False)
+        except Exception as e:
+            print(f"Error saving global settings: {e}")
 
 
 
@@ -2078,6 +2138,17 @@ class EPubViewer(Adw.ApplicationWindow):
         self.library_search_text = ""
         self._lib_search_handler_id = None
 
+        # Load global settings (theme, etc.)
+        self.global_settings = self.library_manager.load_global_settings()
+        self.user_theme = self.global_settings.get("user_theme", DEFAULT_SETTINGS["user_theme"])
+        
+        # Connect to system theme changes at instance level
+        self.style_manager = Adw.StyleManager.get_default()
+        self.style_manager.connect("notify::dark", self._on_system_theme_changed)
+
+        # Apply global theme immediately
+        GLib.idle_add(lambda: self.apply_theme(self.user_theme))
+
         # main layout and sidebar setup (kept largely unchanged)
         main_vbox = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         self.set_content(main_vbox)
@@ -2578,6 +2649,7 @@ class EPubViewer(Adw.ApplicationWindow):
 
         # --- Content area ---
         self.toolbar = Adw.ToolbarView()
+        self.toolbar.add_css_class("pg-bg")
         self.content_header = Adw.HeaderBar(); self.content_header.add_css_class("flat")
         self.content_sidebar_toggle = Gtk.Button(); self.content_sidebar_toggle.add_css_class("flat")
         self._sidebar_img = Gtk.Image.new_from_icon_name("sidebar-show-symbolic")
@@ -2625,8 +2697,34 @@ class EPubViewer(Adw.ApplicationWindow):
         self.search_toggle_btn.set_tooltip_text("Search library"); self.search_toggle_btn.connect("clicked", self._toggle_library_search)
         self.content_header.pack_end(self.search_toggle_btn)
 
-        menu_model = Gio.Menu(); menu_model.append("About", "app.about")
-        self.menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic"); self.menu_btn.set_popover(Gtk.PopoverMenu.new_from_model(menu_model))
+        menu_model = Gio.Menu()
+        # --- Theme submenu ---
+        self.themes = {
+            "Sepia": ("#5b4636", "#f1e8d0"),
+            "Gray": ("#222222", "#e0e0e0"),
+            "Grass": ("#242d17", "#d7dbbd"),
+            "Cherry": ("#4e1609", "#f0d1d5"),
+            "Sky": ("#262d48", "#cedef5"),
+            "Green": ("#111111", "#8acf00"),
+            "Solarized": ("#002b36", "#fdf6e3"),
+            "Nord":("#2e3440", "#d8dee9"),
+            "Turmeric": ("#28282c", "#FFcf00"),
+            "Purple Gold": ("#451843", "#FFcf00"),
+            "Green2": ("#004b01", "#8acf00"),
+            "Blue Yellow": ("#010745", "#fbfc33"),
+            "Blue Black": ("#050505", "#71cfef"),
+        }
+
+        theme_menu = Gio.Menu()
+        theme_menu.append("Default", "app.set-theme('Default')")
+        for name in self.themes.keys():
+            theme_menu.append(name, f"app.set-theme('{name}')")
+        menu_model.append_submenu("Theme", theme_menu)
+
+        # --- About and other items ---
+        menu_model.append("About", "app.about")
+        self.menu_btn = Gtk.MenuButton(icon_name="open-menu-symbolic")
+        self.menu_btn.set_popover(Gtk.PopoverMenu.new_from_model(menu_model))
         self.content_header.pack_end(self.menu_btn)
 
         self.toolbar.add_top_bar(self.content_header)
@@ -2816,6 +2914,10 @@ class EPubViewer(Adw.ApplicationWindow):
                         print(f"  → finished = {finished}")
                         
                         if finished:
+                            # Trigger theme updates for the freshly loaded page
+                            if hasattr(self, "update_webview_theme"):
+                                self.update_webview_theme()
+                                
                             # install observer and reapply user settings after page is ready
                             self._install_persistent_user_style()
                             self._reapply_user_font_override()
@@ -3005,6 +3107,187 @@ class EPubViewer(Adw.ApplicationWindow):
             print(f"[SCROLL] ⚠️ Error receiving scroll position: {e}")
 
     # ---------- minimal TTS control methods ----------
+    def update_webview_theme(self):
+        global page_bg, text_fg
+        global page_bg_light, text_fg_light, page_bg_dark, text_fg_dark
+
+        style_manager = Adw.StyleManager.get_default()
+        is_dark = style_manager.get_dark()
+
+        if is_dark:
+            try:
+                page_bg = page_bg_dark
+                text_fg = text_fg_dark
+            except NameError:
+                pass
+        else:
+            try:
+                page_bg = page_bg_light
+                text_fg = text_fg_light
+            except NameError:
+                pass
+
+    def update_webview_theme(self):
+        """Inject current theme colors into webview via JavaScript."""
+        if not getattr(self, "webview", None):
+            return
+
+        # Use current instance colors
+        bg = getattr(self, "current_page_bg", "#ffffff")
+        fg = getattr(self, "current_text_fg", "#000000")
+
+        try:
+            js = f"""
+                (function() {{
+                    const html = document.documentElement;
+                    const body = document.body;
+                    const ec = document.querySelector('.ebook-content');
+                    
+                    const apply = (el) => {{
+                        if (!el) return;
+                        el.style.setProperty('background-color', '{bg}', 'important');
+                        el.style.setProperty('color', '{fg}', 'important');
+                        el.style.setProperty('background', '{bg}', 'important');
+                    }};
+                    
+                    apply(html);
+                    apply(body);
+                    apply(ec);
+                    
+                    return "theme_updated";
+                }})();
+            """
+            self.webview.evaluate_javascript(js, -1, None, None, None, None, None)
+        except Exception as e:
+            print("❌ Failed to inject theme JS:", e)
+
+
+
+    def _on_system_theme_changed(self, manager, pspec):
+        """Handle system theme change (light/dark toggle)."""
+        if hasattr(self, "user_theme"):
+            GLib.idle_add(lambda: self.apply_theme(self.user_theme))
+
+    def apply_theme(self, theme_name):
+        """Apply a theme by name, regenerating the CSS provider."""
+        self.user_theme = theme_name
+        
+        # Get theme colors from the themes dictionary
+        text_fg, page_bg = getattr(self, "themes", {}).get(theme_name, ("#000000", "#FFFFFF"))
+        
+        # Save theme globally so it's remembered across restarts
+        try:
+            if hasattr(self, "global_settings"):
+                self.global_settings["user_theme"] = theme_name
+                self.library_manager.save_global_settings(self.global_settings)
+        except Exception as e:
+            print(f"Error saving theme globally: {e}")
+
+        is_dark_pref = self.style_manager.get_dark()
+
+        # Set theme-specific colors
+        if theme_name == "Default":
+            self.style_manager.set_color_scheme(Adw.ColorScheme.DEFAULT)
+            # Re-fetch dark state as it might have changed if we were forced
+            is_dark_pref = self.style_manager.get_dark()
+            
+            print(f"🎨 Applying default theme (dark={is_dark_pref})")
+          
+            # Standard Adwaita-like colors for reader
+            # Using colors that look good in both modes
+            self.page_bg_light = "#ffffff"
+            self.text_fg_light = "#1e1e1e"
+            self.page_bg_dark = "#1d1d20"
+            self.text_fg_dark = "#f0f0f0"
+            self.sidebar_bg_light = "#ebebed"
+            self.sidebar_bg_dark = "#2e2e32"
+            
+            # Active reader colors depend on system pref
+            self.current_page_bg = self.page_bg_dark if is_dark_pref else self.page_bg_light
+            self.current_text_fg = self.text_fg_dark if is_dark_pref else self.text_fg_light
+            self.sidebar_bg = self.sidebar_bg_dark if is_dark_pref else self.sidebar_bg_light
+            ui_fg = self.current_text_fg
+        else:
+            # Custom themes: Derive dark-mode colors from theme colors
+            print(f"🎨 Applying custom theme: {theme_name} (dark={is_dark_pref})")
+            
+            # Calculate derived colors for both modes
+            sidebar_bg_light = darken(page_bg, 0.9)
+            self.page_bg_light = page_bg
+            self.text_fg_light = text_fg
+            self.page_bg_dark = darken(text_fg, 0.9)
+            self.sidebar_bg_dark = darken(self.page_bg_dark, 1.3)
+            self.text_fg_dark = darken(page_bg, 0.8)
+            
+            if is_dark_pref:
+                self.current_page_bg = self.page_bg_dark
+                self.current_text_fg = self.text_fg_dark
+                self.sidebar_bg = self.sidebar_bg_dark
+            else:
+                self.current_page_bg = page_bg
+                self.current_text_fg = text_fg
+                self.sidebar_bg = sidebar_bg_light
+            
+            ui_fg = self.current_text_fg
+
+        # Use a single provider for the window's custom styling to avoid conflicts
+        css = f"""
+            .pg-bg {{ 
+                background-color: {self.current_page_bg}; 
+                color: {self.current_text_fg}; 
+            }}
+            .epub-sidebar {{ 
+                background-color: {self.sidebar_bg}; 
+                color: {ui_fg}; 
+            }}
+            .epub-sidebar .adw-action-row:hover {{ 
+                background-color: rgba(0,0,0,0.06) if not is_dark_pref else rgba(255,255,255,0.1); 
+            }}
+            .epub-sidebar .adw-action-row.selected {{ 
+                background-color: rgba(0,0,0,0.12) if not is_dark_pref else rgba(255,255,255,0.15); 
+            }}
+            popover > contents, popover menu {{ 
+                background-color: {self.current_page_bg}; 
+                color: {self.current_text_fg}; 
+            }}
+        """
+        # Fix JS ternary-style in CSS string (replace with actual values)
+        hover_bg = "rgba(255,255,255,0.1)" if is_dark_pref else "rgba(0,0,0,0.06)"
+        sel_bg = "rgba(255,255,255,0.15)" if is_dark_pref else "rgba(0,0,0,0.12)"
+        
+        css = f"""
+            .pg-bg {{ background-color: {self.current_page_bg}; color: {self.current_text_fg}; }}
+            .epub-sidebar {{ background-color: {self.sidebar_bg}; color: {ui_fg}; }}
+            .epub-sidebar .adw-action-row:hover {{ background-color: {hover_bg}; }}
+            .epub-sidebar .adw-action-row.selected {{ background-color: {sel_bg}; }}
+            popover > contents, popover menu {{ background-color: {self.current_page_bg}; color: {self.current_text_fg}; }}
+        """
+
+        display = Gdk.Display.get_default()
+        for attr in ("_css_light_provider", "_css_dark_provider"):
+            if hasattr(self, attr):
+                provider = getattr(self, attr)
+                try:
+                    Gtk.StyleContext.remove_provider_for_display(display, provider)
+                except Exception:
+                    pass
+                delattr(self, attr)
+
+        if not hasattr(self, "_theme_css_provider"):
+            self._theme_css_provider = Gtk.CssProvider()
+            Gtk.StyleContext.add_provider_for_display(display, self._theme_css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+
+        self._theme_css_provider.load_from_data(css.encode())
+            
+        # Update Webview theme immediately
+        self.update_webview_theme()
+        
+        print(f"✓ Theme '{theme_name}' applied")
+
+
+
+
+
     def _update_tts_button_states(self):
         # enable play if webview + there is content
         has_web = bool(self.webview)
@@ -5406,6 +5689,13 @@ class EPubViewer(Adw.ApplicationWindow):
         try:
             page_css_base = (self.css_content or "") + "\n" + THEME_INJECTION_CSS
 
+            # Get current theme colors from instance attributes for the webview flash fix
+            current_bg = getattr(self, "current_page_bg", "#ffffff")
+            current_fg = getattr(self, "current_text_fg", "#000000")
+
+            bg_theme_decl = f"background-color: {current_bg} !important; color: {current_fg} !important;"
+
+
             # Always use column-width mode
             col_decl = "column-width: {}px; -webkit-column-width: {}px;".format(self.column_width_px, self.column_width_px)
 
@@ -5425,6 +5715,7 @@ class EPubViewer(Adw.ApplicationWindow):
                 html {{
                     height: 100vh;
                     overflow: hidden;
+                    {bg_theme_decl}
                 }}
                 body {{
                     margin: 0;
@@ -5433,12 +5724,14 @@ class EPubViewer(Adw.ApplicationWindow):
                     overflow: hidden;
                     /* Default fallback font-family if epub has no font specified */
                     font-family: sans-serif;
+                    {bg_theme_decl}
                 }}
                 .ebook-content {{
                     {col_decl}
                     {gap_decl}
                     {fill_decl}
                     {padding_decl}
+                    {bg_theme_decl}
                     
                     /* Container dimensions */
                     width: 100vw;
@@ -7743,6 +8036,13 @@ class EPubViewer(Adw.ApplicationWindow):
         self.page_margin_left = settings.get("page_margin_left", DEFAULT_SETTINGS["page_margin_left"])
         self._margins_linked = settings.get("margins_linked", DEFAULT_SETTINGS["margins_linked"])
         
+        # Fallback to global theme if not set for this book
+        global_theme = getattr(self, "global_settings", {}).get("user_theme", "Default")
+        self.user_theme = settings.get("user_theme", global_theme)
+        
+        if hasattr(self, "apply_theme") and getattr(self, "user_theme", None):
+            self.apply_theme(self.user_theme)
+        
         # Update UI controls
         self._update_ui_from_settings()
         
@@ -7761,6 +8061,12 @@ class EPubViewer(Adw.ApplicationWindow):
         self.page_margin_bottom = DEFAULT_SETTINGS["page_margin_bottom"]
         self.page_margin_left = DEFAULT_SETTINGS["page_margin_left"]
         self._margins_linked = DEFAULT_SETTINGS["margins_linked"]
+        
+        # Use global theme preference instead of hardcoded default
+        self.user_theme = getattr(self, "global_settings", {}).get("user_theme", "Default")
+        
+        if hasattr(self, "apply_theme") and getattr(self, "user_theme", None):
+            self.apply_theme(self.user_theme)
         
         # Update UI controls
         self._update_ui_from_settings()
@@ -10193,13 +10499,31 @@ class Application(Adw.Application):
         act2.connect("activate", lambda a, v: _action_wrapper_win("set_column_width", v))
         self.add_action(act2)
 
+        self.create_action("set-theme", self.on_set_theme, variant_type="s")
+
     def do_activate(self):
         win = self.props.active_window
         if not win: win = EPubViewer(self)
         win.present()
-    def create_action(self, name, callback, shortcuts=None):
-        action = Gio.SimpleAction.new(name, None); action.connect("activate", callback); self.add_action(action)
+        
+    def create_action(self, name, callback, shortcuts=None, variant_type=None):
+        variant = GLib.VariantType.new(variant_type) if variant_type else None
+        action = Gio.SimpleAction.new(name, variant)
+        action.connect("activate", callback)
+        self.add_action(action)
         if shortcuts: self.set_accels_for_action(f"app.{name}", shortcuts)
+
+    def on_set_theme(self, action, parameter):
+        """Handle app.set-theme('light'|'dark'|'sepia'|'auto')"""
+        if not parameter:
+            return
+        theme_name = parameter.get_string()
+        win = self.props.active_window
+        if not win:
+            return
+        # Call your window’s theme apply function
+        if hasattr(win, "apply_theme"):
+            win.apply_theme(theme_name)
 
 def main():
     _ensure_library_dir()
