@@ -2742,13 +2742,29 @@ class EPubViewer(Adw.ApplicationWindow):
 
         # scrolled and bottom nav
         self.scrolled = Gtk.ScrolledWindow(); self.scrolled.set_vexpand(True)
-        bottom_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        bottom_bar.set_margin_top(6); bottom_bar.set_margin_bottom(6); bottom_bar.set_margin_start(6); bottom_bar.set_margin_end(6)
+        bottom_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
+        bottom_bar.set_margin_top(4); bottom_bar.set_margin_bottom(4); bottom_bar.set_margin_start(6); bottom_bar.set_margin_end(6)
         self.prev_btn = Gtk.Button(icon_name="go-previous-symbolic"); self.prev_btn.add_css_class("flat")
         self.prev_btn.set_sensitive(False); self.prev_btn.connect("clicked", self.prev_page)
         bottom_bar.append(self.prev_btn)
-        self.progress = Gtk.ProgressBar(); self.progress.set_show_text(True); self.progress.set_hexpand(True)
-        bottom_bar.append(self.progress)
+        self.back_btn = Gtk.Button(icon_name="edit-undo-symbolic"); self.back_btn.add_css_class("flat")
+        self.back_btn.set_sensitive(False)
+        self.back_btn.set_tooltip_text("Go back")
+        bottom_bar.append(self.back_btn)
+        self.forward_btn = Gtk.Button(icon_name="edit-redo-symbolic"); self.forward_btn.add_css_class("flat")
+        self.forward_btn.set_sensitive(False)
+        self.forward_btn.set_tooltip_text("Go forward")
+        bottom_bar.append(self.forward_btn)
+        self.pct_label = Gtk.Label(label="0 %")
+        self.pct_label.set_width_chars(5)
+        bottom_bar.append(self.pct_label)
+        # Slider (replaces ProgressBar)
+        self.nav_slider = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 1.0, 0.001)
+        self.nav_slider.set_draw_value(False)
+        self.nav_slider.set_hexpand(True)
+        self._slider_updating = False  # Guard against feedback loops
+        # WIP: self.nav_slider.connect("value-changed", self._on_slider_changed)
+        bottom_bar.append(self.nav_slider)
         self.next_btn = Gtk.Button(icon_name="go-next-symbolic"); self.next_btn.add_css_class("flat")
         self.next_btn.set_sensitive(False); self.next_btn.connect("clicked", self.next_page)
         bottom_bar.append(self.next_btn)
@@ -8022,7 +8038,7 @@ class EPubViewer(Adw.ApplicationWindow):
             if e.get("path") == path:
                 e["title"] = title; e["author"] = author
                 if cover_dst: e["cover"] = cover_dst
-                e["index"] = int(self.current_index); e["progress"] = float(self.progress.get_fraction() or 0.0)
+                e["index"] = int(self.current_index); e["progress"] = float(self.nav_slider.get_value() or 0.0)
                 found = True; found_entry = e; break
         if found and found_entry is not None:
             # move to end (most-recent)
@@ -8032,7 +8048,7 @@ class EPubViewer(Adw.ApplicationWindow):
             except Exception:
                 pass
         if not found:
-            entry = {"path": path, "title": title, "author": author, "cover": cover_dst, "index": int(self.current_index), "progress": float(self.progress.get_fraction() or 0.0)}
+            entry = {"path": path, "title": title, "author": author, "cover": cover_dst, "index": int(self.current_index), "progress": float(self.nav_slider.get_value() or 0.0)}
             self.library.append(entry)
         if len(self.library) > 200: self.library = self.library[-200:]
         self.library_manager.save(self.library)
@@ -8073,7 +8089,7 @@ class EPubViewer(Adw.ApplicationWindow):
             "page_margin_left": getattr(self, "page_margin_left", DEFAULT_SETTINGS["page_margin_left"]),
             "margins_linked": getattr(self, "_margins_linked", DEFAULT_SETTINGS["margins_linked"]),
             "current_index": int(self.current_index),
-            "progress": float(self.progress.get_fraction() or 0.0) if hasattr(self, 'progress') else 0.0,
+            "progress": float(self.nav_slider.get_value() or 0.0) if hasattr(self, 'nav_slider') else 0.0,
             # Handle both old tuple/list format and new dict format
             "scroll_positions": {str(k): (v if isinstance(v, dict) else {'mode': 'multi' if (isinstance(v, (tuple, list)) and len(v) > 0 and v[0] > 0) else 'single', 'scrollLeft': v[0] if isinstance(v, (tuple, list)) and len(v) > 0 else 0, 'scrollTop': v[1] if isinstance(v, (tuple, list)) and len(v) > 1 else 0, 'columnIndex': None, 'percentage': 0.0}) for k, v in self.saved_scroll_positions.items()},
             # Add bookmarks to settings
@@ -10521,7 +10537,7 @@ class EPubViewer(Adw.ApplicationWindow):
         for e in self.library:
             if e.get("path") == self.book_path:
                 e["index"] = int(self.current_index)
-                e["progress"] = float(self.progress.get_fraction() or 0.0)
+                e["progress"] = float(self.nav_slider.get_value() or 0.0)
                 # Handle both old tuple format and new dict format for JSON serialization
                 scroll_positions_serializable = {}
                 for k, v in self.saved_scroll_positions.items():
