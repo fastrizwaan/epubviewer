@@ -2108,6 +2108,8 @@ class EPubViewer(Adw.ApplicationWindow):
         
         # Simple scroll position tracking with debug
         self.saved_scroll_positions = {}  # {chapter_index: (scrollLeft, scrollTop)}
+        self._chapter_progress_starts = []
+        self._chapter_progress_sizes = []
         
         # Enhanced Bookmarks and Annotations system
         self.bookmarks = []  # List of bookmark dicts
@@ -3112,6 +3114,124 @@ class EPubViewer(Adw.ApplicationWindow):
         # periodic update of TTS button states
         GLib.timeout_add(400, self._update_tts_button_states)
 
+    def _schedule_js_scroll_sync(self):
+        """Request a JS-side scroll/progress sync (throttled)."""
+        if not getattr(self, "webview", None):
+            return
+        if getattr(self, "_js_scroll_sync_timer", None) is not None:
+            return
+        try:
+            from gi.repository import GLib
+            def _run():
+                self._js_scroll_sync_timer = None
+                self._eval_js("""
+                    (function() {
+                        try {
+                            if (typeof window.sendScrollPositionToPython === 'function') {
+                                window.sendScrollPositionToPython();
+                            }
+                        } catch (e) {}
+                    })();
+                """)
+                return False
+            self._js_scroll_sync_timer = GLib.timeout_add(50, _run)
+        except Exception:
+            pass
+
+    def _rebuild_progress_map(self):
+        """Build weighted chapter progress map from chapter content size."""
+        total = len(self.items) if hasattr(self, "items") and self.items else 0
+        self._chapter_progress_starts = []
+        self._chapter_progress_sizes = []
+        if total <= 0:
+            return
+
+        raw_weights = []
+        for item in self.items:
+            weight = 1.0
+            try:
+                raw = item.get_content() or b""
+            except Exception:
+                raw = b""
+            try:
+                raw_text = raw.decode("utf-8", errors="ignore") if isinstance(raw, bytes) else str(raw)
+            except Exception:
+                raw_text = ""
+
+            if raw_text:
+                text_only = re.sub(r"<[^>]+>", " ", raw_text)
+                text_only = re.sub(r"\s+", " ", text_only).strip()
+                text_weight = len(text_only)
+                # Fallback so image-heavy/short-text chapters still get non-trivial weight.
+                raw_weight = int(len(raw_text) * 0.20)
+                weight = max(1, text_weight, raw_weight)
+
+            raw_weights.append(float(weight))
+
+        total_weight = float(sum(raw_weights))
+        if total_weight <= 0:
+            raw_weights = [1.0] * total
+            total_weight = float(total)
+
+        sizes = [w / total_weight for w in raw_weights]
+        if sizes:
+            # Keep accumulated total stable at exactly 1.0.
+            sizes[-1] = max(0.0, 1.0 - sum(sizes[:-1]))
+
+        starts = []
+        acc = 0.0
+        for size in sizes:
+            starts.append(acc)
+            acc += size
+
+        self._chapter_progress_starts = starts
+        self._chapter_progress_sizes = sizes
+
+    def _chapter_intra_to_overall(self, chapter_index, intra_pct):
+        """Convert chapter index + intra-chapter percentage into overall progress."""
+        total = len(self.items) if hasattr(self, "items") and self.items else 0
+        if total <= 0:
+            return 0.0
+
+        idx = max(0, min(int(chapter_index), total - 1))
+        intra = max(0.0, min(1.0, float(intra_pct)))
+
+        if len(self._chapter_progress_starts) == total and len(self._chapter_progress_sizes) == total:
+            start = self._chapter_progress_starts[idx]
+            span = max(0.0, self._chapter_progress_sizes[idx])
+            overall = start + (intra * span)
+        else:
+            overall = (idx + intra) / max(1, total)
+
+        return max(0.0, min(1.0, overall))
+
+    def _overall_to_chapter_intra(self, overall):
+        """Convert overall progress into chapter index + intra-chapter percentage."""
+        total = len(self.items) if hasattr(self, "items") and self.items else 0
+        if total <= 0:
+            return 0, 0.0
+
+        val = max(0.0, min(1.0, float(overall)))
+
+        if len(self._chapter_progress_starts) == total and len(self._chapter_progress_sizes) == total:
+            if val >= 1.0:
+                return total - 1, 1.0
+
+            for i in range(total):
+                start = self._chapter_progress_starts[i]
+                span = max(0.0, self._chapter_progress_sizes[i])
+                end = start + span
+                if val < end or i == total - 1:
+                    if span <= 0:
+                        return i, 0.0
+                    intra = (val - start) / span
+                    return i, max(0.0, min(1.0, intra))
+
+        chapter_float = val * total
+        idx = max(0, min(int(chapter_float), total - 1))
+        intra = chapter_float - idx
+        return idx, max(0.0, min(1.0, intra))
+
     def _on_vertical_scroll(self, adj):
         """Handle vertical scroll from GTK ScrolledWindow (single-column mode)."""
         # Always reset the timer first so the throttle can accept new events
@@ -3126,17 +3246,17 @@ class EPubViewer(Adw.ApplicationWindow):
             page = adj.get_page_size()
             max_scroll = upper - page
             
-            # Guard: Only update from vertical scroll if there's significant vertical scrollable area
-            # (In multi-column mode, max_scroll is typically 0 or very small)
-            if max_scroll > 5 and self.current_index is not None:
+            # Keep slider synced even with small adjustment ranges.
+            if max_scroll > 0.01 and self.current_index is not None:
                 page_pct = val / max_scroll
-                total = len(self.items) if hasattr(self, 'items') and self.items else 1
-                overall = (self.current_index + page_pct) / max(1, total)
+                overall = self._chapter_intra_to_overall(self.current_index, page_pct)
                 # print(f"[DEBUG-SCROLL] GTK Single: idx={self.current_index} page_pct={page_pct:.3f} total={total} overall={overall:.3f}")
                 overall = max(0.0, min(1.0, overall))
                 self._slider_updating = True
-                self.nav_slider.set_value(overall)
-                self._slider_updating = False
+                try:
+                    self.nav_slider.set_value(overall)
+                finally:
+                    self._slider_updating = False
                 self.pct_label.set_label(f"{int(overall * 100)} %")
                 # Save position
                 if self.current_index is not None:
@@ -3147,6 +3267,7 @@ class EPubViewer(Adw.ApplicationWindow):
                         'columnIndex': None,
                         'percentage': page_pct
                     }
+            self._schedule_js_scroll_sync()
         except Exception:
             pass
         return False
@@ -3165,17 +3286,17 @@ class EPubViewer(Adw.ApplicationWindow):
             page = adj.get_page_size()
             max_scroll = upper - page
             
-            # Guard: Only update from horizontal scroll if there's significant horizontal scrollable area
-            # (In single-column mode, max_scroll is typically 0)
-            if max_scroll > 5 and self.current_index is not None:
+            # Keep slider synced even with small adjustment ranges.
+            if max_scroll > 0.01 and self.current_index is not None:
                 page_pct = val / max_scroll
-                total = len(self.items) if hasattr(self, 'items') and self.items else 1
-                overall = (self.current_index + page_pct) / max(1, total)
+                overall = self._chapter_intra_to_overall(self.current_index, page_pct)
                 # print(f"[DEBUG-SCROLL] GTK Multi: idx={self.current_index} page_pct={page_pct:.3f} total={total} overall={overall:.3f}")
                 overall = max(0.0, min(1.0, overall))
                 self._slider_updating = True
-                self.nav_slider.set_value(overall)
-                self._slider_updating = False
+                try:
+                    self.nav_slider.set_value(overall)
+                finally:
+                    self._slider_updating = False
                 self.pct_label.set_label(f"{int(overall * 100)} %")
                 # Save position
                 if self.current_index is not None:
@@ -3186,6 +3307,7 @@ class EPubViewer(Adw.ApplicationWindow):
                         'columnIndex': None,
                         'percentage': page_pct
                     }
+            self._schedule_js_scroll_sync()
         except Exception:
             pass
         return False
@@ -3200,8 +3322,7 @@ class EPubViewer(Adw.ApplicationWindow):
     
     def _on_scroll_position_received(self, content_manager, js_result):
         """Handle scroll position updates from JavaScript"""
-        if getattr(self, '_slider_updating', False):
-            return
+        slider_locked = getattr(self, '_slider_updating', False)
         try:
             msg = js_result.to_string()
             print(f"[DEBUG-SCROLL] JS Message: {msg}") # Debugging
@@ -3226,28 +3347,17 @@ class EPubViewer(Adw.ApplicationWindow):
                             'percentage': percentage
                         }
                         
-                        # In single-column mode, prioritize the GTK adjustment handler for slider updates
-                        # as it's more direct for scrollbar/mousewheel tracking.
-                        # Only update from JS if GTK isn't handling it (max_vscroll <= 5)
-                        vadj = self.scrolled.get_vadjustment()
-                        hadj = self.scrolled.get_hadjustment()
-                        max_vscroll = vadj.get_upper() - vadj.get_page_size()
-                        max_hscroll = hadj.get_upper() - hadj.get_page_size()
-                        
-                        is_multi = (mode == 'multi')
-                        significant_gtk_scroll = (max_vscroll > 5) if not is_multi else (max_hscroll > 5)
-                        
-                        # Only update from JS if GTK isn't currently providing significant scroll updates
-                        if is_multi or not significant_gtk_scroll:
-                            # Update the progress bar
-                            total = len(self.items) if hasattr(self, 'items') and self.items else 1
-                            page_pct = max(0.0, min(1.0, percentage))
-                            overall = (self.current_index + page_pct) / max(1, total)
-                            overall = max(0.0, min(1.0, overall))
+                        # Always apply JS progress updates: WebView internal scroll actions
+                        # (mouse wheel, scrollbar thumb drag, keyboard) may not update GTK adjustments.
+                        page_pct = max(0.0, min(1.0, percentage))
+                        overall = self._chapter_intra_to_overall(self.current_index, page_pct)
+                        overall = max(0.0, min(1.0, overall))
+
+                        if not slider_locked:
                             self._slider_updating = True
                             self.nav_slider.set_value(overall)
                             self._slider_updating = False
-                            self.pct_label.set_label(f"{int(overall * 100)} %")
+                        self.pct_label.set_label(f"{int(overall * 100)} %")
                         
                         # Only auto-save if not currently loading a book, and throttle it
                         if not getattr(self, '_loading_book', False):
@@ -4955,9 +5065,9 @@ class EPubViewer(Adw.ApplicationWindow):
                         -webkit-column-fill: unset;
                         padding: {mt}px {mr}px {mb}px {ml}px;
                         width: 100%;
-                        height: auto;
+                        height: 100vh;
                         overflow-x: hidden;
-                        overflow-y: visible;
+                        overflow-y: auto;
                         box-sizing: border-box;
                         position: relative;
                     `;
@@ -5006,6 +5116,13 @@ class EPubViewer(Adw.ApplicationWindow):
                         }}
                     }}, 50);
                 }}
+
+                // Keep Python progress slider synced after live layout/style updates.
+                setTimeout(() => {{
+                    if (typeof window.sendScrollPositionToPython === 'function') {{
+                        window.sendScrollPositionToPython();
+                    }}
+                }}, 80);
                 
                 console.log('✓ Column CSS updated successfully');
             }} catch(e) {{
@@ -6195,6 +6312,19 @@ class EPubViewer(Adw.ApplicationWindow):
                 if (container) {{
                     let progressTimer = null;
                     let snapTimer = null;
+                    const getObservedScroll = function() {{
+                        const doc = document.documentElement || {{}};
+                        const body = document.body || {{}};
+                        const rootLeft = window.pageXOffset || window.scrollX || doc.scrollLeft || body.scrollLeft || 0;
+                        const rootTop = window.pageYOffset || window.scrollY || doc.scrollTop || body.scrollTop || 0;
+                        return {{
+                            left: Math.round(Math.max(container.scrollLeft || 0, rootLeft || 0)),
+                            top: Math.round(Math.max(container.scrollTop || 0, rootTop || 0))
+                        }};
+                    }};
+                    let sample = getObservedScroll();
+                    let lastSampleLeft = sample.left;
+                    let lastSampleTop = sample.top;
                     
                     const onScroll = function() {{
                         // 1. Smooth, high-frequency progress update
@@ -6214,33 +6344,67 @@ class EPubViewer(Adw.ApplicationWindow):
                     }};
                     
                     container.addEventListener('scroll', onScroll, {{ passive: true }});
-                    window.addEventListener('scroll', function() {{
-                        if (window.isSingleColumnMode) onScroll();
-                    }}, {{ passive: true }});
+                    document.addEventListener('scroll', onScroll, {{ passive: true, capture: true }});
+                    window.addEventListener('scroll', onScroll, {{ passive: true }});
+
+                    // Some WebKit scrollbar-thumb drags can skip frequent scroll callbacks;
+                    // these hooks and sampler keep progress updates reliable.
+                    const flushProgress = function() {{
+                        sendScrollPositionToPython();
+                    }};
+                    container.addEventListener('mouseup', flushProgress, {{ passive: true }});
+                    container.addEventListener('pointerup', flushProgress, {{ passive: true }});
+                    container.addEventListener('touchend', flushProgress, {{ passive: true }});
+                    document.addEventListener('mouseup', flushProgress, {{ passive: true }});
+                    if ('onscrollend' in container) {{
+                        container.addEventListener('scrollend', flushProgress, {{ passive: true }});
+                    }}
+
+                    setInterval(() => {{
+                        const observed = getObservedScroll();
+                        if (observed.left !== lastSampleLeft || observed.top !== lastSampleTop) {{
+                            lastSampleLeft = observed.left;
+                            lastSampleTop = observed.top;
+                            sendScrollPositionToPython();
+                        }}
+                    }}, 120);
                 }}
                 
                 function sendScrollPositionToPython() {{
                     try {{
                         const container = document.querySelector('.ebook-content');
                         if (!container) return;
+                        const doc = document.documentElement || {{}};
+                        const body = document.body || {{}};
+                        const rootLeft = window.pageXOffset || window.scrollX || doc.scrollLeft || body.scrollLeft || 0;
+                        const rootTop = window.pageYOffset || window.scrollY || doc.scrollTop || body.scrollTop || 0;
+                        const rootScrollWidth = Math.max(doc.scrollWidth || 0, body.scrollWidth || 0);
+                        const rootScrollHeight = Math.max(doc.scrollHeight || 0, body.scrollHeight || 0);
+                        const rootClientWidth = window.innerWidth || doc.clientWidth || body.clientWidth || 0;
+                        const rootClientHeight = window.innerHeight || doc.clientHeight || body.clientHeight || 0;
                         
                         const mode = window.isSingleColumnMode ? 'single' : 'multi';
-                        let scrollLeft = Math.round(container.scrollLeft || 0);
-                        let scrollTop = Math.round(container.scrollTop || 0);
+                        let scrollLeft = Math.round(Math.max(container.scrollLeft || 0, rootLeft || 0));
+                        let scrollTop = Math.round(Math.max(container.scrollTop || 0, rootTop || 0));
                         let percentage = 0;
                         let columnIndex = null;
                         
                         if (mode === 'multi') {{
                             const metrics = getContainerMetrics();
-                            if (metrics && metrics.container.scrollWidth > 0) {{
-                                percentage = scrollLeft / Math.max(1, metrics.container.scrollWidth - metrics.clientWidth);
+                            const containerMaxScroll = metrics ? Math.max(0, metrics.container.scrollWidth - metrics.clientWidth) : 0;
+                            const rootMaxScroll = Math.max(0, rootScrollWidth - rootClientWidth);
+                            const maxScroll = Math.max(containerMaxScroll, rootMaxScroll);
+                            if (maxScroll > 0) {{
+                                percentage = scrollLeft / Math.max(1, maxScroll);
+                            }}
+                            if (metrics && metrics.pageWidth > 0) {{
                                 columnIndex = Math.round(scrollLeft / metrics.pageWidth);
                             }}
                         }} else {{
                             // Single-column: Check both container and window/documentElement
-                            const sTop = container.scrollTop || window.pageYOffset || window.scrollY || document.documentElement.scrollTop || document.body.scrollTop || 0;
-                            const sHeight = container.scrollHeight || document.documentElement.scrollHeight || document.body.scrollHeight || 0;
-                            const cHeight = container.clientHeight || window.innerHeight || document.documentElement.clientHeight || 0;
+                            const sTop = scrollTop;
+                            const sHeight = Math.max(container.scrollHeight || 0, rootScrollHeight);
+                            const cHeight = Math.max(container.clientHeight || 0, rootClientHeight);
                             
                             const maxScroll = sHeight - cHeight;
                             if (maxScroll > 0) {{
@@ -6262,6 +6426,8 @@ class EPubViewer(Adw.ApplicationWindow):
                         console.log('Error in sendScrollPositionToPython: ' + e);
                     }}
                 }}
+
+                window.sendScrollPositionToPython = sendScrollPositionToPython;
                 
                 // Mouse wheel navigation
                 window.addEventListener('wheel', function(e) {{
@@ -7115,6 +7281,7 @@ class EPubViewer(Adw.ApplicationWindow):
                 self.items = docs
             if not self.items:
                 self.show_error("No document items found in EPUB"); return
+            self._rebuild_progress_map()
             try:
                 if self.reading_breakpoint and not self.reading_breakpoint.get_condition():
                     pass
@@ -8022,6 +8189,8 @@ class EPubViewer(Adw.ApplicationWindow):
     # ---- Navigation ----
     def update_navigation(self):
         total = len(self.items) if hasattr(self, "items") and self.items else 0
+        if total > 0 and len(self._chapter_progress_starts) != total:
+            self._rebuild_progress_map()
         self.prev_btn.set_sensitive(getattr(self, "current_index", 0) > 0)
         self.next_btn.set_sensitive(getattr(self, "current_index", 0) < total - 1)
         
@@ -8036,7 +8205,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     # Fallback for old format
                     pass 
 
-            overall = (self.current_index + intra_pct) / total
+            overall = self._chapter_intra_to_overall(self.current_index, intra_pct)
             self._slider_updating = True
             self.nav_slider.set_value(max(0.0, min(1.0, overall)))
             self._slider_updating = False
@@ -8048,13 +8217,12 @@ class EPubViewer(Adw.ApplicationWindow):
             return  # Programmatic update, ignore
         val = scale.get_value()
         total = len(self.items) if hasattr(self, 'items') and self.items else 0
+        if total > 0 and len(self._chapter_progress_starts) != total:
+            self._rebuild_progress_map()
         if total == 0:
             return
         # Which chapter does this value correspond to?
-        chapter_float = val * total
-        target_chapter = int(chapter_float)
-        target_chapter = max(0, min(target_chapter, total - 1))
-        intra_pct = chapter_float - target_chapter
+        target_chapter, intra_pct = self._overall_to_chapter_intra(val)
         
         self.pct_label.set_label(f"{int(val * 100)} %")
         
@@ -8123,8 +8291,13 @@ class EPubViewer(Adw.ApplicationWindow):
         total = len(self.items) if hasattr(self, 'items') and self.items else 0
         if total <= 1:
             return
+        if len(self._chapter_progress_starts) != total:
+            self._rebuild_progress_map()
         for i in range(total):
-            pos = i / total
+            if len(self._chapter_progress_starts) == total:
+                pos = self._chapter_progress_starts[i]
+            else:
+                pos = i / total
             self.nav_slider.add_mark(pos, Gtk.PositionType.TOP, None)
 
     def next_page(self, button):
@@ -8222,6 +8395,8 @@ class EPubViewer(Adw.ApplicationWindow):
             try: shutil.rmtree(self.temp_dir)
             except Exception as e: print(f"Error cleaning up temp directory: {e}")
         self.temp_dir = None; self.book = None; self.items = []; self.item_map = {}; self.css_content = ""; self.current_index = 0
+        self._chapter_progress_starts = []
+        self._chapter_progress_sizes = []
         try:
             if getattr(self, "toc_root_store", None):
                 self.toc_root_store = Gio.ListStore(item_type=TocItem); self.toc_sel = Gtk.NoSelection(model=self.toc_root_store)

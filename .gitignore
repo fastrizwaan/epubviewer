@@ -11,3 +11,4 @@ build
 epubviewer.egg-info
 src/epubviewer.egg-info
 test
+epubreader
