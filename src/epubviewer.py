@@ -2111,6 +2111,7 @@ class EPubViewer(Adw.ApplicationWindow):
         self._chapter_progress_starts = []
         self._chapter_progress_sizes = []
         self._continuous_scroll_sync_id = None
+        self._column_snap_timer = None
         
         # Enhanced Bookmarks and Annotations system
         self.bookmarks = []  # List of bookmark dicts
@@ -3181,6 +3182,38 @@ class EPubViewer(Adw.ApplicationWindow):
             pass
         self._continuous_scroll_sync_id = None
 
+    def _schedule_column_snap(self, delay_ms=180):
+        """Snap multi-column scroll to nearest column after drag settles."""
+        if not getattr(self, "webview", None):
+            return
+        try:
+            from gi.repository import GLib
+            if getattr(self, "_column_snap_timer", None):
+                GLib.source_remove(self._column_snap_timer)
+                self._column_snap_timer = None
+
+            def _run():
+                self._column_snap_timer = None
+                self._eval_js("""
+                    (function() {
+                        try {
+                            if (!window.isSingleColumnMode) {
+                                if (typeof window.snapScroll === 'function') {
+                                    window.snapScroll();
+                                }
+                                if (typeof window.sendScrollPositionToPython === 'function') {
+                                    window.sendScrollPositionToPython();
+                                }
+                            }
+                        } catch (e) {}
+                    })();
+                """)
+                return False
+
+            self._column_snap_timer = GLib.timeout_add(delay_ms, _run)
+        except Exception:
+            self._column_snap_timer = None
+
     def _rebuild_progress_map(self):
         """Build weighted chapter progress map from chapter content size."""
         total = len(self.items) if hasattr(self, "items") and self.items else 0
@@ -3350,6 +3383,7 @@ class EPubViewer(Adw.ApplicationWindow):
                         'columnIndex': None,
                         'percentage': page_pct
                     }
+                self._schedule_column_snap()
             self._schedule_js_scroll_sync()
         except Exception:
             pass
@@ -6345,6 +6379,7 @@ class EPubViewer(Adw.ApplicationWindow):
                         metrics.container.scrollLeft = targetScroll;
                     }}
                 }}
+                window.snapScroll = snapScroll;
                 
                 // Improved Scroll Tracking
                 const container = document.querySelector('.ebook-content');
@@ -8434,6 +8469,12 @@ class EPubViewer(Adw.ApplicationWindow):
         except Exception:
             pass
         self._stop_continuous_scroll_sync()
+        try:
+            if getattr(self, "_column_snap_timer", None):
+                GLib.source_remove(self._column_snap_timer)
+        except Exception:
+            pass
+        self._column_snap_timer = None
             
         if getattr(self, "temp_dir", None) and os.path.exists(self.temp_dir):
             try: shutil.rmtree(self.temp_dir)
