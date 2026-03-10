@@ -2766,6 +2766,11 @@ class EPubViewer(Adw.ApplicationWindow):
         self.nav_slider.set_draw_value(False)
         self.nav_slider.set_hexpand(True)
         self._slider_updating = False  # Guard against feedback loops
+        self._slider_user_dragging = False
+        slider_gesture = Gtk.GestureClick()
+        slider_gesture.connect("pressed", lambda *_: setattr(self, "_slider_user_dragging", True))
+        slider_gesture.connect("released", lambda *_: (setattr(self, "_slider_user_dragging", False), self._schedule_js_scroll_sync()))
+        self.nav_slider.add_controller(slider_gesture)
         self.nav_slider.connect("value-changed", self._on_slider_changed)
         bottom_bar.append(self.nav_slider)
         self.next_btn = Gtk.Button(icon_name="go-next-symbolic"); self.next_btn.add_css_class("flat")
@@ -3119,6 +3124,8 @@ class EPubViewer(Adw.ApplicationWindow):
         """Request a JS-side scroll/progress sync (throttled)."""
         if not getattr(self, "webview", None):
             return
+        if getattr(self, "_slider_user_dragging", False):
+            return
         if getattr(self, "_js_scroll_sync_timer", None) is not None:
             return
         try:
@@ -3149,6 +3156,8 @@ class EPubViewer(Adw.ApplicationWindow):
                 if not getattr(self, "webview", None):
                     self._continuous_scroll_sync_id = None
                     return False
+                if getattr(self, "_slider_user_dragging", False):
+                    return True
                 self._eval_js("""
                     (function() {
                         try {
@@ -3271,7 +3280,7 @@ class EPubViewer(Adw.ApplicationWindow):
         # Always reset the timer first so the throttle can accept new events
         self._vadj_scroll_timer = None
 
-        if getattr(self, '_slider_updating', False):
+        if getattr(self, '_slider_updating', False) or getattr(self, "_slider_user_dragging", False):
             return False
 
         try:
@@ -3311,7 +3320,7 @@ class EPubViewer(Adw.ApplicationWindow):
         # Always reset the timer first so the throttle can accept new events
         self._hadj_scroll_timer = None
 
-        if getattr(self, '_slider_updating', False):
+        if getattr(self, '_slider_updating', False) or getattr(self, "_slider_user_dragging", False):
             return False
 
         try:
@@ -3353,7 +3362,7 @@ class EPubViewer(Adw.ApplicationWindow):
     
     def _on_scroll_position_received(self, content_manager, js_result):
         """Handle scroll position updates from JavaScript"""
-        slider_locked = getattr(self, '_slider_updating', False)
+        slider_locked = getattr(self, '_slider_updating', False) or getattr(self, "_slider_user_dragging", False)
         try:
             msg = js_result.to_string()
             # Expected format: "mode|scrollLeft|scrollTop|columnIndex|percentage"
@@ -6379,15 +6388,19 @@ class EPubViewer(Adw.ApplicationWindow):
 
                     // Some WebKit scrollbar-thumb drags can skip frequent scroll callbacks;
                     // these hooks and sampler keep progress updates reliable.
-                    const flushProgress = function() {{
+                    const flushProgress = function(forceSnap = false) {{
+                        if (forceSnap && !window.isSingleColumnMode) {{
+                            snapScroll();
+                        }}
                         sendScrollPositionToPython();
                     }};
-                    container.addEventListener('mouseup', flushProgress, {{ passive: true }});
-                    container.addEventListener('pointerup', flushProgress, {{ passive: true }});
-                    container.addEventListener('touchend', flushProgress, {{ passive: true }});
-                    document.addEventListener('mouseup', flushProgress, {{ passive: true }});
+                    container.addEventListener('mouseup', () => flushProgress(true), {{ passive: true }});
+                    container.addEventListener('pointerup', () => flushProgress(true), {{ passive: true }});
+                    container.addEventListener('touchend', () => flushProgress(true), {{ passive: true }});
+                    document.addEventListener('mouseup', () => flushProgress(true), {{ passive: true }});
+                    document.addEventListener('pointerup', () => flushProgress(true), {{ passive: true }});
                     if ('onscrollend' in container) {{
-                        container.addEventListener('scrollend', flushProgress, {{ passive: true }});
+                        container.addEventListener('scrollend', () => flushProgress(true), {{ passive: true }});
                     }}
 
                     setInterval(() => {{
@@ -6441,7 +6454,6 @@ class EPubViewer(Adw.ApplicationWindow):
                                 percentage = sTop / maxScroll;
                             }}
                             scrollTop = Math.round(sTop);
-                            console.log('[SCROLL-JS] 📄 ' + mode + ' pct: ' + (percentage*100).toFixed(1) + '% (top=' + scrollTop + ', max=' + maxScroll + ')');
                         }}
                         
                         percentage = Math.max(0, Math.min(1, percentage));
