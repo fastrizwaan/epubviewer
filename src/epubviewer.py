@@ -2110,6 +2110,7 @@ class EPubViewer(Adw.ApplicationWindow):
         self.saved_scroll_positions = {}  # {chapter_index: (scrollLeft, scrollTop)}
         self._chapter_progress_starts = []
         self._chapter_progress_sizes = []
+        self._continuous_scroll_sync_id = None
         
         # Enhanced Bookmarks and Annotations system
         self.bookmarks = []  # List of bookmark dicts
@@ -3138,6 +3139,39 @@ class EPubViewer(Adw.ApplicationWindow):
         except Exception:
             pass
 
+    def _start_continuous_scroll_sync(self):
+        """Continuously request JS scroll/progress updates as a fallback path."""
+        if getattr(self, "_continuous_scroll_sync_id", None) is not None:
+            return
+        try:
+            from gi.repository import GLib
+            def _tick():
+                if not getattr(self, "webview", None):
+                    self._continuous_scroll_sync_id = None
+                    return False
+                self._eval_js("""
+                    (function() {
+                        try {
+                            if (typeof window.sendScrollPositionToPython === 'function') {
+                                window.sendScrollPositionToPython();
+                            }
+                        } catch (e) {}
+                    })();
+                """)
+                return True
+            self._continuous_scroll_sync_id = GLib.timeout_add(120, _tick)
+        except Exception:
+            self._continuous_scroll_sync_id = None
+
+    def _stop_continuous_scroll_sync(self):
+        try:
+            from gi.repository import GLib
+            if getattr(self, "_continuous_scroll_sync_id", None):
+                GLib.source_remove(self._continuous_scroll_sync_id)
+        except Exception:
+            pass
+        self._continuous_scroll_sync_id = None
+
     def _rebuild_progress_map(self):
         """Build weighted chapter progress map from chapter content size."""
         total = len(self.items) if hasattr(self, "items") and self.items else 0
@@ -3314,18 +3348,14 @@ class EPubViewer(Adw.ApplicationWindow):
 
     def _on_console_log_received(self, content_manager, js_result):
         """Handle console.log messages from JavaScript"""
-        try:
-            msg = js_result.to_string()
-            print(f"[JS] {msg}")
-        except Exception as e:
-            print(f"[JS Error] Could not read message: {e}")
+        # Keep this handler for compatibility, but suppress noisy JS console output.
+        return
     
     def _on_scroll_position_received(self, content_manager, js_result):
         """Handle scroll position updates from JavaScript"""
         slider_locked = getattr(self, '_slider_updating', False)
         try:
             msg = js_result.to_string()
-            print(f"[DEBUG-SCROLL] JS Message: {msg}") # Debugging
             # Expected format: "mode|scrollLeft|scrollTop|columnIndex|percentage"
             # mode: 'single' or 'multi'
             if '|' in msg:
@@ -7513,6 +7543,7 @@ class EPubViewer(Adw.ApplicationWindow):
                 self._loading_book = False
                 print(f"[LOAD] 🔓 Auto-save re-enabled (new book)")
             self._add_chapter_marks()
+            self._start_continuous_scroll_sync()
             self.update_navigation(); self.display_page()
             self._update_library_entry()
         except Exception:
@@ -8390,6 +8421,7 @@ class EPubViewer(Adw.ApplicationWindow):
                 self._clear_search()
         except Exception:
             pass
+        self._stop_continuous_scroll_sync()
             
         if getattr(self, "temp_dir", None) and os.path.exists(self.temp_dir):
             try: shutil.rmtree(self.temp_dir)
@@ -10948,8 +10980,6 @@ class EPubViewer(Adw.ApplicationWindow):
 
     def _save_progress_for_library(self):
         if not self.book_path: return
-        print(f"[SCROLL] 💾 Saving progress for library")
-        print(f"[SCROLL] Current saved positions: {self.saved_scroll_positions}")
         
         changed = False
         for e in self.library:
@@ -10972,7 +11002,6 @@ class EPubViewer(Adw.ApplicationWindow):
                             'percentage': 0.0
                         }
                 e["scroll_positions"] = scroll_positions_serializable
-                print(f"[SCROLL] Saved to library: {e['scroll_positions']}")
                 changed = True
                 break
         if changed: self.library_manager.save(self.library)
