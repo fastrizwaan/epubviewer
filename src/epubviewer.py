@@ -2112,6 +2112,11 @@ class EPubViewer(Adw.ApplicationWindow):
         self._chapter_progress_sizes = []
         self._continuous_scroll_sync_id = None
         self._column_snap_timer = None
+        self._page_nav_queue = []
+        self._page_nav_busy = False
+        self._page_nav_op_id = 0
+        self._progress_save_timer = None
+        self._progress_save_delay_ms = 3500
         
         # Enhanced Bookmarks and Annotations system
         self.bookmarks = []  # List of bookmark dicts
@@ -2746,6 +2751,8 @@ class EPubViewer(Adw.ApplicationWindow):
 
         # scrolled and bottom nav
         self.scrolled = Gtk.ScrolledWindow(); self.scrolled.set_vexpand(True)
+        # Reader behavior: hide horizontal scrollbar, keep vertical scrollbar for single-column mode.
+        self.scrolled.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         bottom_bar = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=4)
         bottom_bar.set_margin_top(4); bottom_bar.set_margin_bottom(4); bottom_bar.set_margin_start(6); bottom_bar.set_margin_end(6)
         self.prev_btn = Gtk.Button(icon_name="go-previous-symbolic"); self.prev_btn.add_css_class("flat")
@@ -3214,6 +3221,40 @@ class EPubViewer(Adw.ApplicationWindow):
         except Exception:
             self._column_snap_timer = None
 
+    def _cancel_deferred_progress_save(self):
+        try:
+            if getattr(self, "_progress_save_timer", None):
+                GLib.source_remove(self._progress_save_timer)
+        except Exception:
+            pass
+        self._progress_save_timer = None
+
+    def _schedule_deferred_progress_save(self, delay_ms=None):
+        """Debounce library progress saves; only save after scrolling settles."""
+        if not getattr(self, "book_path", None):
+            return
+        if getattr(self, "_loading_book", False):
+            return
+
+        self._cancel_deferred_progress_save()
+
+        wait_ms = int(delay_ms if delay_ms is not None else getattr(self, "_progress_save_delay_ms", 3500))
+        if wait_ms < 250:
+            wait_ms = 250
+
+        def _run():
+            self._progress_save_timer = None
+            try:
+                self._save_progress_for_library()
+            except Exception as e:
+                print(f"[SCROLL] ⚠️ Deferred progress save failed: {e}")
+            return False
+
+        try:
+            self._progress_save_timer = GLib.timeout_add(wait_ms, _run)
+        except Exception:
+            self._progress_save_timer = None
+
     def _rebuild_progress_map(self):
         """Build weighted chapter progress map from chapter content size."""
         total = len(self.items) if hasattr(self, "items") and self.items else 0
@@ -3343,6 +3384,7 @@ class EPubViewer(Adw.ApplicationWindow):
                         'columnIndex': None,
                         'percentage': page_pct
                     }
+                self._update_page_nav_buttons(page_pct)
             self._schedule_js_scroll_sync()
         except Exception:
             pass
@@ -3383,7 +3425,10 @@ class EPubViewer(Adw.ApplicationWindow):
                         'columnIndex': None,
                         'percentage': page_pct
                     }
-                self._schedule_column_snap()
+                self._update_page_nav_buttons(page_pct)
+                # Avoid snap churn while rapid button-nav queue is active.
+                if not getattr(self, "_page_nav_busy", False):
+                    self._schedule_column_snap()
             self._schedule_js_scroll_sync()
         except Exception:
             pass
@@ -3431,13 +3476,10 @@ class EPubViewer(Adw.ApplicationWindow):
                             self.nav_slider.set_value(overall)
                             self._slider_updating = False
                         self.pct_label.set_label(f"{int(overall * 100)} %")
+                        self._update_page_nav_buttons(page_pct)
                         
-                        # Only auto-save if not currently loading a book, and throttle it
-                        if not getattr(self, '_loading_book', False):
-                            now = time.time()
-                            if now - getattr(self, '_last_lib_save', 0) > 2.0: # 2s throttle
-                                self._last_lib_save = now
-                                self._save_progress_for_library()
+                        # Debounced save: don't write on every scroll tick.
+                        self._schedule_deferred_progress_save()
         except Exception as e:
             print(f"[SCROLL] ⚠️ Error receiving scroll position: {e}")
 
@@ -5165,7 +5207,7 @@ class EPubViewer(Adw.ApplicationWindow):
                         padding: {mt}px {mr}px {mb}px {ml}px;
                         width: 100vw;
                         height: 100vh;
-                        overflow-x: auto;
+                        overflow-x: hidden;
                         overflow-y: hidden;
                         box-sizing: border-box;
                         position: relative;
@@ -5352,6 +5394,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     self.content_sidebar_toggle.set_visible(False)
                     self.split.set_show_sidebar(False)
                     self.split.set_collapsed(False)
+                    self._cancel_deferred_progress_save()
                     self._save_progress_for_library()
                 except Exception:
                     pass
@@ -5380,6 +5423,7 @@ class EPubViewer(Adw.ApplicationWindow):
                 
                 # Save progress
                 try:
+                    self._cancel_deferred_progress_save()
                     self._save_progress_for_library()
                     print("[APP] ✓ Progress saved on exit")
                 except Exception as e:
@@ -5402,6 +5446,7 @@ class EPubViewer(Adw.ApplicationWindow):
             except Exception:
                 pass
             
+            self._cancel_deferred_progress_save()
             try: self._save_progress_for_library()
             except Exception: pass
             try: self.cleanup()
@@ -6127,8 +6172,8 @@ class EPubViewer(Adw.ApplicationWindow):
                         column-count: unset !important;
                     }}
                     
-                    /* Enable both scroll directions - JS will manage based on column count */
-                    overflow-x: auto;
+                    /* Keep horizontal bar hidden; multi-column horizontal movement is JS-driven */
+                    overflow-x: hidden;
                     overflow-y: auto;
                     
                     /* Important for columns to work */
@@ -6718,7 +6763,7 @@ class EPubViewer(Adw.ApplicationWindow):
                                 padding: ${{padding.top}}px ${{padding.right}}px ${{padding.bottom}}px ${{padding.left}}px;
                                 width: 100vw;
                                 height: 100vh;
-                                overflow-x: auto;
+                                overflow-x: hidden;
                                 overflow-y: hidden;
                                 box-sizing: border-box;
                                 position: relative;
@@ -8269,8 +8314,11 @@ class EPubViewer(Adw.ApplicationWindow):
         total = len(self.items) if hasattr(self, "items") and self.items else 0
         if total > 0 and len(self._chapter_progress_starts) != total:
             self._rebuild_progress_map()
-        self.prev_btn.set_sensitive(getattr(self, "current_index", 0) > 0)
-        self.next_btn.set_sensitive(getattr(self, "current_index", 0) < total - 1)
+        has_content = total > 0
+        if not has_content:
+            self.prev_btn.set_sensitive(False)
+            self.next_btn.set_sensitive(False)
+            return
         
         # Update progress bar with chapter-level progress + saved intra-chapter percentage
         if total > 0:
@@ -8288,6 +8336,91 @@ class EPubViewer(Adw.ApplicationWindow):
             self.nav_slider.set_value(max(0.0, min(1.0, overall)))
             self._slider_updating = False
             self.pct_label.set_label(f"{int(overall * 100)} %")
+            self._update_page_nav_buttons(intra_pct)
+
+    def _update_page_nav_buttons(self, intra_pct=None):
+        """Set prev/next icon + sensitivity based on chapter boundary and availability."""
+        total = len(self.items) if hasattr(self, "items") and self.items else 0
+        if total <= 0:
+            self.prev_btn.set_icon_name("go-previous-symbolic")
+            self.next_btn.set_icon_name("go-next-symbolic")
+            self.prev_btn.set_sensitive(False)
+            self.next_btn.set_sensitive(False)
+            return
+
+        idx = max(0, min(int(getattr(self, "current_index", 0)), total - 1))
+        if intra_pct is None:
+            intra_pct = 0.0
+            pos_data = self.saved_scroll_positions.get(idx) if hasattr(self, "saved_scroll_positions") else None
+            if isinstance(pos_data, dict):
+                intra_pct = float(pos_data.get("percentage", 0.0) or 0.0)
+
+        pct = max(0.0, min(1.0, float(intra_pct)))
+        at_start = pct <= 0.001
+        at_end = pct >= 0.999
+        has_prev_chapter = idx > 0
+        has_next_chapter = idx < total - 1
+
+        self.prev_btn.set_icon_name("go-first-symbolic" if at_start and has_prev_chapter else "go-previous-symbolic")
+        self.next_btn.set_icon_name("go-last-symbolic" if at_end and has_next_chapter else "go-next-symbolic")
+
+        can_prev = (not at_start) or has_prev_chapter
+        can_next = (not at_end) or has_next_chapter
+        self.prev_btn.set_sensitive(can_prev)
+        self.next_btn.set_sensitive(can_next)
+
+    def _queue_page_nav(self, direction):
+        """Queue page navigation steps so rapid clicks are processed reliably."""
+        step = 1 if direction >= 0 else -1
+
+        # Compress backlog to a bounded net intent so opposite rapid clicks cancel out.
+        try:
+            net = sum(self._page_nav_queue) + step
+        except Exception:
+            net = step
+        max_pending = 8
+        if net > 0:
+            self._page_nav_queue = [1] * min(max_pending, net)
+        elif net < 0:
+            self._page_nav_queue = [-1] * min(max_pending, abs(net))
+        else:
+            self._page_nav_queue = []
+
+        if not self._page_nav_busy:
+            self._process_page_nav_queue()
+
+    def _process_page_nav_queue(self):
+        if self._page_nav_busy:
+            return
+        if not self._page_nav_queue:
+            return
+
+        step = self._page_nav_queue.pop(0)
+        self._page_nav_busy = True
+        self._page_nav_op_id += 1
+        op_id = self._page_nav_op_id
+
+        done_called = [False]
+
+        def _done():
+            if done_called[0]:
+                return
+            done_called[0] = True
+            # Ignore stale callbacks from older operations.
+            if op_id != self._page_nav_op_id:
+                return
+            self._page_nav_busy = False
+            if self._page_nav_queue:
+                GLib.idle_add(self._process_page_nav_queue)
+
+        # Safety watchdog: never let the queue remain stuck in busy state.
+        GLib.timeout_add(450, lambda: (
+            (setattr(self, "_page_nav_busy", False), GLib.idle_add(self._process_page_nav_queue))
+            if (self._page_nav_busy and op_id == self._page_nav_op_id and not done_called[0]) else None,
+            False
+        )[1])
+
+        self._page_scroll_then_chapter(step, done_callback=_done)
 
     def _on_slider_changed(self, scale):
         """Handle user dragging the slider to navigate."""
@@ -8378,61 +8511,171 @@ class EPubViewer(Adw.ApplicationWindow):
                 pos = i / total
             self.nav_slider.add_mark(pos, Gtk.PositionType.TOP, None)
 
+    def _navigate_chapter_with_capture(self, step, done_callback=None):
+        """Navigate chapters with scroll capture/bookmarking to preserve progress."""
+        if not getattr(self, "items", None):
+            if callable(done_callback):
+                done_callback()
+            return
+
+        current = self.current_index if self.current_index is not None else 0
+        target = current + int(step)
+        if target < 0 or target >= len(self.items):
+            if callable(done_callback):
+                done_callback()
+            return
+
+        arrow = "➡️" if step > 0 else "⬅️"
+        print(f"\n[SCROLL] {arrow} Chapter boundary reached at chapter {current}, navigating to chapter {target}")
+
+        capture_done = [False]
+        from_index = current
+
+        def on_capture_done():
+            if capture_done[0]:
+                return
+            capture_done[0] = True
+            print("[SCROLL] ✓ Capture completed, now navigating chapter")
+
+            self._add_auto_bookmark(from_index)
+            self.current_index = target
+            self.update_navigation()
+            self.display_page()
+            self._save_progress_for_library(force_settings=True)
+            if callable(done_callback):
+                done_callback()
+
+        self._capture_scroll_with_callback(on_capture_done)
+
+        # Fallback timeout so navigation is not blocked by JS callback delays.
+        GLib.timeout_add(220, lambda: (
+            on_capture_done() if not capture_done[0] else None,
+            False
+        )[1])
+
+    def _page_scroll_then_chapter(self, direction, done_callback=None):
+        """
+        Scroll one viewport (PageUp/PageDown behavior). If chapter boundary is hit,
+        move to previous/next chapter.
+        """
+        if not getattr(self, "items", None):
+            if callable(done_callback):
+                done_callback()
+            return
+
+        step = 1 if direction >= 0 else -1
+        if not getattr(self, "webview", None):
+            self._navigate_chapter_with_capture(step, done_callback=done_callback)
+            return
+
+        js = f"""
+        (function() {{
+            const direction = {step};
+            const container = document.querySelector('.ebook-content');
+            if (!container) return 'no-container';
+
+            if (window.isSingleColumnMode) {{
+                const viewH = container.clientHeight || window.innerHeight || 0;
+                let currentY = container.scrollTop || 0;
+                let maxY = Math.max(0, (container.scrollHeight || 0) - viewH);
+                let useWindowScroll = false;
+
+                // Fallback path if chapter scroll is on the page root instead of container.
+                if (maxY <= 1) {{
+                    const doc = document.documentElement || document.body;
+                    const docH = Math.max(
+                        (document.documentElement && document.documentElement.scrollHeight) || 0,
+                        (document.body && document.body.scrollHeight) || 0
+                    );
+                    const winH = window.innerHeight || (doc && doc.clientHeight) || viewH || 0;
+                    const winY = window.pageYOffset || window.scrollY ||
+                                 (document.documentElement && document.documentElement.scrollTop) ||
+                                 (document.body && document.body.scrollTop) || 0;
+                    maxY = Math.max(0, docH - winH);
+                    currentY = winY;
+                    useWindowScroll = true;
+                }}
+
+                const targetY = Math.max(0, Math.min(maxY, currentY + direction * viewH * 0.9));
+                if (Math.abs(targetY - currentY) > 1) {{
+                    if (useWindowScroll) {{
+                        window.scrollTo(0, targetY);
+                    }} else if (typeof container.scrollTo === 'function') {{
+                        container.scrollTo({{ top: targetY, left: 0, behavior: 'auto' }});
+                    }} else {{
+                        container.scrollTop = targetY;
+                    }}
+                    return 'moved';
+                }}
+                return direction > 0 ? 'at-end' : 'at-start';
+            }}
+
+            // Multi-column: page by visible viewport width.
+            const viewW = container.clientWidth || window.innerWidth || 0;
+            const currentX = container.scrollLeft || 0;
+            let effectiveMaxX = Math.max(0, (container.scrollWidth || 0) - viewW);
+            // Exclude trailing spacer column from button paging "end" detection.
+            try {{
+                if (typeof window.getContainerMetrics === 'function') {{
+                    const metrics = window.getContainerMetrics();
+                    if (metrics && metrics.maxCol >= 0 && metrics.pageWidth > 0) {{
+                        const contentMaxX = Math.max(0, metrics.maxCol * metrics.pageWidth);
+                        effectiveMaxX = Math.min(effectiveMaxX, contentMaxX);
+                    }}
+                }}
+            }} catch (e) {{}}
+
+            const targetX = Math.max(0, Math.min(effectiveMaxX, currentX + direction * viewW * 0.95));
+
+            if (Math.abs(targetX - currentX) > 1) {{
+                container.scrollLeft = targetX;
+                if (typeof window.snapScroll === 'function') {{
+                    window.snapScroll();
+                }}
+                return 'moved';
+            }}
+
+            return direction > 0 ? 'at-end' : 'at-start';
+        }})();
+        """
+
+        def on_result(webview, result, user_data):
+            status = ""
+            try:
+                js_value = webview.evaluate_javascript_finish(result)
+                try:
+                    status = (js_value.to_string() or "").lower()
+                except Exception:
+                    status = str(js_value).lower()
+            except Exception as e:
+                print(f"[SCROLL] ⚠️ Page-step JS callback failed: {e}")
+
+            if "moved" in status:
+                self._schedule_js_scroll_sync()
+                if callable(done_callback):
+                    done_callback()
+                return
+
+            if ("at-end" in status and step > 0) or ("at-start" in status and step < 0):
+                self._navigate_chapter_with_capture(step, done_callback=done_callback)
+                return
+
+            if "no-container" in status or "no-metrics" in status:
+                print(f"[SCROLL] ⚠️ Page-step unavailable ({status})")
+            if callable(done_callback):
+                done_callback()
+
+        try:
+            self.webview.evaluate_javascript(js, -1, None, None, None, on_result, None)
+        except Exception as e:
+            print(f"[SCROLL] ⚠️ Page-step JS execution failed: {e}")
+            self._navigate_chapter_with_capture(step, done_callback=done_callback)
+
     def next_page(self, button):
-        if self.current_index < len(self.items) - 1:
-            print(f"\n[SCROLL] ➡️ Next button clicked - capturing current chapter {self.current_index}")
-            
-            # Flag to track if capture completed
-            capture_done = [False]
-            
-            def on_capture_done():
-                capture_done[0] = True
-                print(f"[SCROLL] ✓ Capture completed, now navigating")
-                
-                # Auto-save bookmark for current chapter before leaving
-                self._add_auto_bookmark(self.current_index)
-                
-                self.current_index += 1
-                self.update_navigation()
-                self.display_page()
-                self._save_progress_for_library()
-            
-            # Start capture with callback
-            self._capture_scroll_with_callback(on_capture_done)
-            
-            # If capture doesn't complete in 200ms, continue anyway
-            GLib.timeout_add(200, lambda: (
-                on_capture_done() if not capture_done[0] else None,
-                False
-            )[1])
+        self._queue_page_nav(1)
 
     def prev_page(self, button):
-        if self.current_index > 0:
-            print(f"\n[SCROLL] ⬅️ Prev button clicked - capturing current chapter {self.current_index}")
-            
-            # Flag to track if capture completed
-            capture_done = [False]
-            
-            def on_capture_done():
-                capture_done[0] = True
-                print(f"[SCROLL] ✓ Capture completed, now navigating")
-                
-                # Auto-save bookmark for current chapter before leaving
-                self._add_auto_bookmark(self.current_index)
-                
-                self.current_index -= 1
-                self.update_navigation()
-                self.display_page()
-                self._save_progress_for_library()
-            
-            # Start capture with callback
-            self._capture_scroll_with_callback(on_capture_done)
-            
-            # If capture doesn't complete in 200ms, continue anyway
-            GLib.timeout_add(200, lambda: (
-                on_capture_done() if not capture_done[0] else None,
-                False
-            )[1])
+        self._queue_page_nav(-1)
 
     # ---- CSS extraction ----
     def extract_css(self):
@@ -8468,6 +8711,7 @@ class EPubViewer(Adw.ApplicationWindow):
                 self._clear_search()
         except Exception:
             pass
+        self._cancel_deferred_progress_save()
         self._stop_continuous_scroll_sync()
         try:
             if getattr(self, "_column_snap_timer", None):
@@ -11031,7 +11275,7 @@ class EPubViewer(Adw.ApplicationWindow):
     
     # ============ END ANNOTATION SYSTEM ============
 
-    def _save_progress_for_library(self):
+    def _save_progress_for_library(self, force_settings=False):
         if not self.book_path: return
         
         changed = False
@@ -11058,8 +11302,10 @@ class EPubViewer(Adw.ApplicationWindow):
                 changed = True
                 break
         if changed: self.library_manager.save(self.library)
-        # Also save book settings
-        self._save_book_settings()
+
+        # Avoid writing full book settings on high-frequency scroll updates.
+        if force_settings:
+            self._save_book_settings()
 
     def _open_parent_folder(self, path):
         try:
