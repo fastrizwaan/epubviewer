@@ -2123,6 +2123,9 @@ class EPubViewer(Adw.ApplicationWindow):
         self.annotations = []  # List of annotation dicts
         self.current_search_query = None  # Store current search query for context menu
         self._loading_book = False  # Flag to prevent auto-save during book load
+        self._pending_annotation_focus = None
+        self._close_save_in_progress = False
+        self._allow_close_after_save = False
         
         # NEW: column settings - only width-based mode
         self.column_width_px = DEFAULT_SETTINGS["column_width_px"]
@@ -3444,7 +3447,8 @@ class EPubViewer(Adw.ApplicationWindow):
         slider_locked = getattr(self, '_slider_updating', False) or getattr(self, "_slider_user_dragging", False)
         try:
             msg = js_result.to_string()
-            # Expected format: "mode|scrollLeft|scrollTop|columnIndex|percentage"
+            # Expected format:
+            # "mode|scrollLeft|scrollTop|columnIndex|percentage|resumeText|resumeBefore|resumeAfter"
             # mode: 'single' or 'multi'
             if '|' in msg:
                 parts = msg.split('|')
@@ -3454,15 +3458,41 @@ class EPubViewer(Adw.ApplicationWindow):
                     top = int(parts[2])
                     col_index = int(parts[3]) if parts[3] != 'null' else None
                     percentage = float(parts[4]) if parts[4] != 'null' else 0.0
+
+                    resume_text = ""
+                    resume_before = ""
+                    resume_after = ""
+                    if len(parts) >= 8:
+                        try:
+                            resume_text = urllib.parse.unquote(parts[5]) if parts[5] != 'null' else ""
+                            resume_before = urllib.parse.unquote(parts[6]) if parts[6] != 'null' else ""
+                            resume_after = urllib.parse.unquote(parts[7]) if parts[7] != 'null' else ""
+                        except Exception:
+                            resume_text = ""
+                            resume_before = ""
+                            resume_after = ""
+
+                    # Keep payload bounded to avoid writing very large settings blobs.
+                    resume_text = re.sub(r"\s+", " ", (resume_text or "")).strip()[:400]
+                    resume_before = re.sub(r"\s+", " ", (resume_before or "")).strip()[:240]
+                    resume_after = re.sub(r"\s+", " ", (resume_after or "")).strip()[:240]
                     
                     if self.current_index is not None:
+                        prev = self.saved_scroll_positions.get(self.current_index, {})
+                        if not isinstance(prev, dict):
+                            prev = {}
+
                         # Store comprehensive position data
                         self.saved_scroll_positions[self.current_index] = {
                             'mode': mode,
                             'scrollLeft': left,
                             'scrollTop': top,
                             'columnIndex': col_index,
-                            'percentage': percentage
+                            'percentage': percentage,
+                            'resume_selected_text': resume_text or prev.get('resume_selected_text', ''),
+                            'resume_text_before': resume_before or prev.get('resume_text_before', ''),
+                            'resume_text_after': resume_after or prev.get('resume_text_after', ''),
+                            'resume_timestamp': time.time() if resume_text else prev.get('resume_timestamp')
                         }
                         
                         # Always apply JS progress updates: WebView internal scroll actions
@@ -5404,35 +5434,84 @@ class EPubViewer(Adw.ApplicationWindow):
 
     def _on_window_close(self, window):
         """Handle window close event - save annotations and bookmarks before exiting."""
-        print("[APP] 🔒 Window closing, saving annotations and bookmarks...")
-        try:
-            if getattr(self, 'book_path', None) and getattr(self, 'book', None):
-                # Save annotations
+        # Second pass after async capture: allow real close to proceed.
+        if getattr(self, "_allow_close_after_save", False):
+            self._allow_close_after_save = False
+            return False
+
+        # Ignore repeated close requests while we are capturing final position.
+        if getattr(self, "_close_save_in_progress", False):
+            return True
+
+        print("[APP] 🔒 Window closing, syncing final position and saving state...")
+
+        has_open_book = bool(getattr(self, 'book_path', None) and getattr(self, 'book', None))
+        if not has_open_book:
+            return False
+
+        self._close_save_in_progress = True
+        finalize_once = {"done": False}
+
+        def _finalize_close():
+            if finalize_once["done"]:
+                return False
+            finalize_once["done"] = True
+            try:
                 try:
                     self._save_annotations()
                     print("[APP] ✓ Annotations saved on exit")
                 except Exception as e:
                     print(f"[APP] ⚠️ Error saving annotations on exit: {e}")
-                
-                # Save bookmarks
+
                 try:
                     self._save_bookmarks()
                     print("[APP] ✓ Bookmarks saved on exit")
                 except Exception as e:
                     print(f"[APP] ⚠️ Error saving bookmarks on exit: {e}")
-                
-                # Save progress
+
                 try:
                     self._cancel_deferred_progress_save()
-                    self._save_progress_for_library()
+                    self._save_progress_for_library(force_settings=True)
                     print("[APP] ✓ Progress saved on exit")
                 except Exception as e:
                     print(f"[APP] ⚠️ Error saving progress on exit: {e}")
-        except Exception as e:
-            print(f"[APP] ⚠️ Error in window close handler: {e}")
-        
-        # Return False to allow the window to close
-        return False
+            finally:
+                self._close_save_in_progress = False
+                self._allow_close_after_save = True
+                GLib.idle_add(self.close)
+            return False
+
+        # Ask JS to flush latest scroll/sentence anchor immediately.
+        try:
+            self._eval_js("""
+                (function() {
+                    try {
+                        if (typeof window.sendScrollPositionToPython === 'function') {
+                            window.sendScrollPositionToPython();
+                        }
+                    } catch (e) {}
+                })();
+            """)
+        except Exception:
+            pass
+
+        # Capture final scroll coords before persisting.
+        captured = {"done": False}
+
+        def _on_captured():
+            if captured["done"]:
+                return
+            captured["done"] = True
+            GLib.timeout_add(40, _finalize_close)
+
+        try:
+            self._capture_scroll_with_callback(_on_captured)
+        except Exception:
+            _on_captured()
+
+        # Safety fallback: never block close if callback does not fire.
+        GLib.timeout_add(280, lambda: (_on_captured(), False)[1])
+        return True
 
     def _stop_reading(self, path=None):
         try:
@@ -6493,6 +6572,97 @@ class EPubViewer(Adw.ApplicationWindow):
                     }}, 120);
                 }}
                 
+                function getSentenceContextFromViewport() {{
+                    try {{
+                        const container = document.querySelector('.ebook-content');
+                        if (!container) return {{ text: '', before: '', after: '' }};
+
+                        const rect = container.getBoundingClientRect();
+                        const sampleX = rect.left + (rect.width / 2);
+                        const sampleY = rect.top + Math.min(rect.height * 0.42, Math.max(100, rect.height - 80));
+
+                        let range = null;
+                        if (document.caretRangeFromPoint) {{
+                            range = document.caretRangeFromPoint(sampleX, sampleY);
+                        }} else if (document.caretPositionFromPoint) {{
+                            const pos = document.caretPositionFromPoint(sampleX, sampleY);
+                            if (pos) {{
+                                range = document.createRange();
+                                range.setStart(pos.offsetNode, pos.offset);
+                                range.setEnd(pos.offsetNode, pos.offset);
+                            }}
+                        }}
+
+                        if (!range || !range.startContainer) {{
+                            return {{ text: '', before: '', after: '' }};
+                        }}
+
+                        let node = range.startContainer;
+                        let offset = range.startOffset || 0;
+                        if (node.nodeType !== Node.TEXT_NODE) {{
+                            const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT, null);
+                            const firstText = walker.nextNode();
+                            if (!firstText) {{
+                                return {{ text: '', before: '', after: '' }};
+                            }}
+                            node = firstText;
+                            offset = 0;
+                        }}
+
+                        const block = (node.parentElement && node.parentElement.closest('p, div, section, article, li, blockquote, h1, h2, h3, h4, h5, h6')) || node.parentElement;
+                        if (!block) {{
+                            return {{ text: '', before: '', after: '' }};
+                        }}
+
+                        const blockText = (block.textContent || '').replace(/\\s+/g, ' ').trim();
+                        if (!blockText) {{
+                            return {{ text: '', before: '', after: '' }};
+                        }}
+
+                        // Convert node offset to block-level character offset.
+                        let blockOffset = 0;
+                        const textWalker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT, null);
+                        let t;
+                        while ((t = textWalker.nextNode())) {{
+                            if (t === node) {{
+                                blockOffset += Math.min(offset, t.textContent.length);
+                                break;
+                            }}
+                            blockOffset += t.textContent.length;
+                        }}
+                        blockOffset = Math.max(0, Math.min(blockText.length - 1, blockOffset));
+
+                        let sentenceStart = 0;
+                        for (let i = blockOffset - 1; i >= 0; i--) {{
+                            const ch = blockText[i];
+                            if ((ch === '.' || ch === '!' || ch === '?') && blockText[i + 1] === ' ') {{
+                                sentenceStart = i + 1;
+                                break;
+                            }}
+                        }}
+
+                        let sentenceEnd = blockText.length;
+                        for (let i = blockOffset; i < blockText.length; i++) {{
+                            const ch = blockText[i];
+                            if ((ch === '.' || ch === '!' || ch === '?') && (i === blockText.length - 1 || blockText[i + 1] === ' ')) {{
+                                sentenceEnd = i + 1;
+                                break;
+                            }}
+                        }}
+
+                        const sentence = blockText.substring(sentenceStart, sentenceEnd).trim().slice(0, 400);
+                        if (!sentence) {{
+                            return {{ text: '', before: '', after: '' }};
+                        }}
+
+                        const before = blockText.substring(0, sentenceStart).trim().split(/\\s+/).slice(-20).join(' ').slice(-240);
+                        const after = blockText.substring(sentenceEnd).trim().split(/\\s+/).slice(0, 20).join(' ').slice(0, 240);
+                        return {{ text: sentence, before, after }};
+                    }} catch (e) {{
+                        return {{ text: '', before: '', after: '' }};
+                    }}
+                }}
+
                 function sendScrollPositionToPython() {{
                     try {{
                         const container = document.querySelector('.ebook-content');
@@ -6537,11 +6707,15 @@ class EPubViewer(Adw.ApplicationWindow):
                         }}
                         
                         percentage = Math.max(0, Math.min(1, percentage));
+                        const anchor = getSentenceContextFromViewport();
+                        const encodedText = encodeURIComponent(anchor.text || '');
+                        const encodedBefore = encodeURIComponent(anchor.before || '');
+                        const encodedAfter = encodeURIComponent(anchor.after || '');
                         
                         if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.scrollPosition) {{
                             const msg = mode + '|' + scrollLeft + '|' + scrollTop + '|' + 
                                        (columnIndex !== null ? columnIndex : 'null') + '|' + 
-                                       percentage.toFixed(4);
+                                       percentage.toFixed(4) + '|' + encodedText + '|' + encodedBefore + '|' + encodedAfter;
                             window.webkit.messageHandlers.scrollPosition.postMessage(msg);
                         }}
                     }} catch (e) {{
@@ -9080,7 +9254,20 @@ class EPubViewer(Adw.ApplicationWindow):
                         print(f"[SCROLL] ✅ Parsed: scrollLeft={left}, scrollTop={top}")
                         
                         # Save position (even if 0,0 - that's a valid position!)
-                        self.saved_scroll_positions[self.current_index] = (left, top)
+                        prev = self.saved_scroll_positions.get(self.current_index, {})
+                        if not isinstance(prev, dict):
+                            prev = {}
+                        self.saved_scroll_positions[self.current_index] = {
+                            'mode': 'multi' if left > 0 else 'single',
+                            'scrollLeft': left,
+                            'scrollTop': top,
+                            'columnIndex': None,
+                            'percentage': 0.0,
+                            'resume_selected_text': prev.get('resume_selected_text', ''),
+                            'resume_text_before': prev.get('resume_text_before', ''),
+                            'resume_text_after': prev.get('resume_text_after', ''),
+                            'resume_timestamp': prev.get('resume_timestamp')
+                        }
                         print(f"[SCROLL] 💾 Saved position for chapter {self.current_index}: (left={left}, top={top})")
                     else:
                         print(f"[SCROLL] ❌ Could not parse: {val_str}")
@@ -9148,12 +9335,19 @@ class EPubViewer(Adw.ApplicationWindow):
                         print(f"[SCROLL] ✅ Parsed: scrollLeft={left}, scrollTop={top}")
                         
                         # Save position (even if 0,0 - that's a valid position!)
+                        prev = self.saved_scroll_positions.get(self.current_index, {})
+                        if not isinstance(prev, dict):
+                            prev = {}
                         self.saved_scroll_positions[self.current_index] = {
                             'mode': 'multi' if left > 0 else 'single',
                             'scrollLeft': left,
                             'scrollTop': top,
                             'columnIndex': None,  # We don't have this info here
-                            'percentage': 0.0  # We don't have this info here
+                            'percentage': 0.0,  # We don't have this info here
+                            'resume_selected_text': prev.get('resume_selected_text', ''),
+                            'resume_text_before': prev.get('resume_text_before', ''),
+                            'resume_text_after': prev.get('resume_text_after', ''),
+                            'resume_timestamp': prev.get('resume_timestamp')
                         }
                         print(f"[SCROLL] 💾 Saved position for chapter {self.current_index}: (left={left}, top={top})")
                     else:
@@ -9207,6 +9401,14 @@ class EPubViewer(Adw.ApplicationWindow):
             col_index = saved.get('columnIndex', None)
             percentage = saved.get('percentage', 0.0)
             print(f"[SCROLL] 🔄 Restoring chapter {self.current_index}: mode={saved_mode}, col={col_index}, %={percentage:.2f}")
+
+        resume_text = ""
+        resume_before = ""
+        resume_after = ""
+        if isinstance(saved, dict):
+            resume_text = str(saved.get('resume_selected_text', '') or '').strip()
+            resume_before = str(saved.get('resume_text_before', '') or '').strip()
+            resume_after = str(saved.get('resume_text_after', '') or '').strip()
         
         # JavaScript to intelligently restore position
         js_code = f"""
@@ -9321,6 +9523,175 @@ class EPubViewer(Adw.ApplicationWindow):
                 print(f"[SCROLL] ✓ Restore JS executed (fallback)")
             except Exception as e2:
                 print(f"[SCROLL] ❌ Both JS methods failed: {e2}")
+
+        # Secondary restore anchor using saved sentence context.
+        if resume_text:
+            GLib.timeout_add(720, lambda: (self._restore_resume_anchor(
+                resume_text,
+                resume_before,
+                resume_after,
+                attempt=0,
+                max_attempts=8
+            ), False)[1])
+
+    def _restore_resume_anchor(self, sentence, text_before="", text_after="", attempt=0, max_attempts=8):
+        """Restore and briefly highlight a saved sentence near the last reading position."""
+        if not getattr(self, "webview", None):
+            return False
+
+        sentence = re.sub(r"\s+", " ", str(sentence or "")).strip()
+        text_before = re.sub(r"\s+", " ", str(text_before or "")).strip()
+        text_after = re.sub(r"\s+", " ", str(text_after or "")).strip()
+        if not sentence:
+            return False
+
+        sentence_js = json.dumps(sentence[:400])
+        before_js = json.dumps(text_before[:240])
+        after_js = json.dumps(text_after[:240])
+
+        js = (
+            "(function() {\n"
+            "  const container = document.querySelector('.ebook-content');\n"
+            "  if (!container) return '0';\n"
+            f"  const sentence = {sentence_js};\n"
+            f"  const beforeCtx = {before_js};\n"
+            f"  const afterCtx = {after_js};\n"
+            "  if (!sentence) return '0';\n"
+            "  const normalize = (v) => (v || '').replace(/\\s+/g, ' ').trim().toLowerCase();\n"
+            "  const escapeRegExp = (v) => String(v || '').replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\n"
+            "  const pattern = new RegExp(escapeRegExp(sentence).replace(/\\s+/g, '\\\\s+'), 'i');\n"
+            "  const beforeNeedle = normalize(beforeCtx).slice(-80);\n"
+            "  const afterNeedle = normalize(afterCtx).slice(0, 80);\n"
+            "\n"
+            "  container.querySelectorAll('.resume-anchor-highlight').forEach((el) => {\n"
+            "    const parent = el.parentNode;\n"
+            "    if (!parent) return;\n"
+            "    while (el.firstChild) parent.insertBefore(el.firstChild, el);\n"
+            "    parent.removeChild(el);\n"
+            "    parent.normalize();\n"
+            "  });\n"
+            "\n"
+            "  let best = null;\n"
+            "  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {\n"
+            "    acceptNode(node) {\n"
+            "      const parent = node && node.parentElement;\n"
+            "      if (!node || !node.textContent || !node.textContent.trim()) return NodeFilter.FILTER_REJECT;\n"
+            "      if (parent && parent.closest('[data-annotation-id]')) return NodeFilter.FILTER_REJECT;\n"
+            "      return NodeFilter.FILTER_ACCEPT;\n"
+            "    }\n"
+            "  });\n"
+            "  let node;\n"
+            "  while ((node = walker.nextNode())) {\n"
+            "    const raw = node.textContent || '';\n"
+            "    const match = pattern.exec(raw);\n"
+            "    if (!match) continue;\n"
+            "    const start = match.index;\n"
+            "    const end = start + match[0].length;\n"
+            "    let score = 1;\n"
+            "    if (beforeNeedle) {\n"
+            "      const beforeSlice = normalize(raw.slice(Math.max(0, start - 260), start));\n"
+            "      if (beforeSlice.includes(beforeNeedle)) score += 2;\n"
+            "    }\n"
+            "    if (afterNeedle) {\n"
+            "      const afterSlice = normalize(raw.slice(end, end + 260));\n"
+            "      if (afterSlice.includes(afterNeedle)) score += 2;\n"
+            "    }\n"
+            "    if (!best || score > best.score) {\n"
+            "      best = { node, start, end, score };\n"
+            "      if (score >= 5) break;\n"
+            "    }\n"
+            "  }\n"
+            "\n"
+            "  let target = null;\n"
+            "  if (best) {\n"
+            "    const range = document.createRange();\n"
+            "    range.setStart(best.node, best.start);\n"
+            "    range.setEnd(best.node, best.end);\n"
+            "    const mark = document.createElement('span');\n"
+            "    mark.className = 'resume-anchor-highlight';\n"
+            "    mark.style.backgroundColor = 'rgba(255, 193, 7, 0.55)';\n"
+            "    mark.style.borderRadius = '3px';\n"
+            "    mark.style.padding = '0 1px';\n"
+            "    mark.style.boxDecorationBreak = 'clone';\n"
+            "    mark.style.transition = 'background-color 0.5s ease';\n"
+            "    try {\n"
+            "      const frag = range.extractContents();\n"
+            "      mark.appendChild(frag);\n"
+            "      range.insertNode(mark);\n"
+            "      target = mark;\n"
+            "    } catch (_err) {\n"
+            "      target = best.node.parentElement || null;\n"
+            "    }\n"
+            "  }\n"
+            "\n"
+            "  if (!target) {\n"
+            "    const sentenceNeedle = normalize(sentence);\n"
+            "    const candidates = container.querySelectorAll('p, li, div, section, article, blockquote, h1, h2, h3, h4, h5, h6');\n"
+            "    for (const el of candidates) {\n"
+            "      const txt = normalize(el.textContent || '');\n"
+            "      if (txt && txt.includes(sentenceNeedle)) {\n"
+            "        target = el;\n"
+            "        break;\n"
+            "      }\n"
+            "    }\n"
+            "  }\n"
+            "\n"
+            "  if (!target) return '0';\n"
+            "  target.scrollIntoView({ behavior: 'auto', block: 'center' });\n"
+            "  if (!target.classList.contains('resume-anchor-highlight')) {\n"
+            "    target.style.transition = 'background-color 0.5s ease';\n"
+            "    target.style.backgroundColor = 'rgba(255, 193, 7, 0.28)';\n"
+            "    setTimeout(() => { target.style.backgroundColor = ''; }, 3500);\n"
+            "  } else {\n"
+            "    setTimeout(() => { target.style.backgroundColor = 'rgba(255, 193, 7, 0.16)'; }, 800);\n"
+            "    setTimeout(() => { target.style.backgroundColor = ''; }, 3600);\n"
+            "  }\n"
+            "  return '1';\n"
+            "})();"
+        )
+
+        def _retry_later():
+            if attempt + 1 >= max_attempts:
+                print(f"[SCROLL] ⚠️ Resume sentence not found after {max_attempts} attempts")
+                return
+            retry_delay = 170 + (attempt * 60)
+            GLib.timeout_add(
+                retry_delay,
+                lambda: (self._restore_resume_anchor(
+                    sentence,
+                    text_before,
+                    text_after,
+                    attempt=attempt + 1,
+                    max_attempts=max_attempts
+                ), False)[1]
+            )
+
+        def _on_result(webview, result, _user_data):
+            found = False
+            try:
+                val = webview.evaluate_javascript_finish(result)
+                raw = str(val).strip().lower()
+                m = re.search(r"(true|false|1|0)", raw)
+                if m:
+                    found = m.group(1) in ("true", "1")
+            except Exception:
+                found = False
+
+            if found:
+                print(f"[SCROLL] ✓ Restored sentence anchor (attempt {attempt + 1}/{max_attempts})")
+                GLib.timeout_add(100, self._snap_to_current_column)
+            else:
+                _retry_later()
+
+        try:
+            self.webview.evaluate_javascript(js, -1, None, None, None, _on_result, None)
+        except Exception:
+            try:
+                self.webview.run_javascript(js, None, None, None)
+            except Exception:
+                pass
+            _retry_later()
+        return False
 
     
     # ============ BOOKMARK SYSTEM ============
@@ -10036,49 +10407,95 @@ class EPubViewer(Adw.ApplicationWindow):
         
         color = self.highlight_colors.get(annotation['highlight_color'], '#ffeb3b')
         annotation_id = annotation['id']
-        selected_text = annotation['selected_text'].replace("'", "\\'")
-        
-        js = f"""
-        (function() {{
-            const container = document.querySelector('.ebook-content');
-            if (!container) return;
-            
-            const searchText = '{selected_text}';
-            const walker = document.createTreeWalker(
-                container,
-                NodeFilter.SHOW_TEXT,
-                null,
-                false
-            );
-            
-            let node;
-            while (node = walker.nextNode()) {{
-                if (node.textContent.includes(searchText)) {{
-                    const parent = node.parentElement;
-                    const html = parent.innerHTML;
-                    const highlighted = html.replace(
-                        searchText,
-                        `<span class="annotation" data-annotation-id="{annotation_id}" 
-                               style="background-color: {color}; cursor: pointer;"
-                               title="Click to view note">${{searchText}}</span>`
-                    );
-                    parent.innerHTML = highlighted;
-                    
-                    // Add click handler
-                    const span = parent.querySelector(`[data-annotation-id="{annotation_id}"]`);
-                    if (span) {{
-                        span.addEventListener('click', function() {{
-                            if (window.webkit && window.webkit.messageHandlers && 
-                                window.webkit.messageHandlers.annotationClick) {{
-                                window.webkit.messageHandlers.annotationClick.postMessage('{annotation_id}');
-                            }}
-                        }});
-                    }}
-                    break;
-                }}
-            }}
-        }})();
-        """
+        selected_text = str(annotation.get('selected_text', '') or '').strip()
+        text_before = str(annotation.get('text_before', '') or '').strip()
+        text_after = str(annotation.get('text_after', '') or '').strip()
+        if not selected_text:
+            return
+
+        selected_js = json.dumps(selected_text[:400])
+        before_js = json.dumps(text_before[:240])
+        after_js = json.dumps(text_after[:240])
+
+        js = (
+            "(function() {\n"
+            "  const container = document.querySelector('.ebook-content');\n"
+            "  if (!container) return false;\n"
+            f"  const annotationId = {json.dumps(annotation_id)};\n"
+            f"  const searchText = {selected_js};\n"
+            f"  const beforeCtx = {before_js};\n"
+            f"  const afterCtx = {after_js};\n"
+            f"  const color = {json.dumps(color)};\n"
+            "  if (!searchText) return false;\n"
+            "\n"
+            "  if (container.querySelector(`[data-annotation-id=\"${annotationId}\"]`)) {\n"
+            "    return true;\n"
+            "  }\n"
+            "\n"
+            "  const normalize = (v) => (v || '').replace(/\\s+/g, ' ').trim().toLowerCase();\n"
+            "  const escapeRegExp = (v) => String(v || '').replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&');\n"
+            "  const textPattern = new RegExp(escapeRegExp(searchText).replace(/\\s+/g, '\\\\s+'), 'i');\n"
+            "  const beforeNeedle = normalize(beforeCtx).slice(-80);\n"
+            "  const afterNeedle = normalize(afterCtx).slice(0, 80);\n"
+            "\n"
+            "  let best = null;\n"
+            "  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {\n"
+            "    acceptNode(node) {\n"
+            "      const parent = node && node.parentElement;\n"
+            "      if (!node || !node.textContent || !node.textContent.trim()) return NodeFilter.FILTER_REJECT;\n"
+            "      if (parent && parent.closest('[data-annotation-id]')) return NodeFilter.FILTER_REJECT;\n"
+            "      return NodeFilter.FILTER_ACCEPT;\n"
+            "    }\n"
+            "  });\n"
+            "\n"
+            "  let node;\n"
+            "  while ((node = walker.nextNode())) {\n"
+            "    const raw = node.textContent || '';\n"
+            "    const match = textPattern.exec(raw);\n"
+            "    if (!match) continue;\n"
+            "    const start = match.index;\n"
+            "    const end = start + match[0].length;\n"
+            "    let score = 1;\n"
+            "    if (beforeNeedle) {\n"
+            "      const beforeSlice = normalize(raw.slice(Math.max(0, start - 260), start));\n"
+            "      if (beforeSlice.includes(beforeNeedle)) score += 2;\n"
+            "    }\n"
+            "    if (afterNeedle) {\n"
+            "      const afterSlice = normalize(raw.slice(end, end + 260));\n"
+            "      if (afterSlice.includes(afterNeedle)) score += 2;\n"
+            "    }\n"
+            "    if (!best || score > best.score) {\n"
+            "      best = { node, start, end, score };\n"
+            "      if (score >= 5) break;\n"
+            "    }\n"
+            "  }\n"
+            "\n"
+            "  if (!best) {\n"
+            "    return false;\n"
+            "  }\n"
+            "\n"
+            "  const range = document.createRange();\n"
+            "  range.setStart(best.node, best.start);\n"
+            "  range.setEnd(best.node, best.end);\n"
+            "  const span = document.createElement('span');\n"
+            "  span.className = 'annotation';\n"
+            "  span.setAttribute('data-annotation-id', annotationId);\n"
+            "  span.style.backgroundColor = color;\n"
+            "  span.style.cursor = 'pointer';\n"
+            "  span.style.borderRadius = '2px';\n"
+            "  span.style.padding = '0 1px';\n"
+            "  span.style.boxDecorationBreak = 'clone';\n"
+            "  span.setAttribute('title', 'Annotation');\n"
+            "  try {\n"
+            "    const frag = range.extractContents();\n"
+            "    span.appendChild(frag);\n"
+            "    range.insertNode(span);\n"
+            "    return true;\n"
+            "  } catch (_err) {\n"
+            "    return false;\n"
+            "  }\n"
+            "})();"
+        )
         
         self._execute_js(js)
     
@@ -10168,35 +10585,89 @@ class EPubViewer(Adw.ApplicationWindow):
         """Jump to an annotation in the text."""
         try:
             chapter_index = annotation['chapter_index']
+            self._pending_annotation_focus = annotation
             
             if chapter_index != self.current_index:
                 self.current_index = chapter_index
                 self.update_navigation()
                 self.display_page()
-            
-            # Scroll to annotation after page loads and highlights are applied
-            # Use 700ms timeout to ensure highlights from page load handler (500ms) are applied first
+
             if self.webview:
-                annotation_id = annotation['id']
-                js = f"""
-                (function() {{
-                    const elem = document.querySelector('[data-annotation-id="{annotation_id}"]');
-                    if (elem) {{
-                        elem.scrollIntoView({{behavior: 'smooth', block: 'center'}});
-                        // Flash highlight
-                        const originalBg = elem.style.backgroundColor;
-                        elem.style.backgroundColor = 'rgba(255, 215, 0, 0.5)';
-                        setTimeout(() => elem.style.backgroundColor = originalBg, 500);
-                    }} else {{
-                        console.log('[ANNOTATION] Element not found for annotation: {annotation_id}');
-                    }}
-                }})();
-                """
-                GLib.timeout_add(500, lambda: self._execute_js(js))
-                GLib.timeout_add(750, self._snap_to_current_column)
+                GLib.timeout_add(120, lambda: (self._focus_annotation_with_retry(
+                    annotation,
+                    attempt=0,
+                    max_attempts=10
+                ), False)[1])
 
         except Exception as e:
             print(f"[ANNOTATION] Error jumping to annotation: {e}")
+
+    def _focus_annotation_with_retry(self, annotation, attempt=0, max_attempts=10):
+        """Find and focus an annotation robustly, retrying until page highlights are ready."""
+        if not self.webview or not annotation:
+            return False
+
+        if annotation.get('chapter_index') != self.current_index:
+            return False
+
+        self._apply_annotation_highlight(annotation)
+
+        annotation_id = str(annotation.get('id', '') or '')
+        if not annotation_id:
+            return False
+
+        js = (
+            "(function() {\n"
+            "  const elem = document.querySelector('[data-annotation-id=\"%s\"]');\n"
+            "  if (!elem) return '0';\n"
+            "  elem.scrollIntoView({ behavior: 'smooth', block: 'center' });\n"
+            "  const originalBg = elem.style.backgroundColor;\n"
+            "  elem.style.transition = 'background-color 0.25s ease';\n"
+            "  elem.style.backgroundColor = 'rgba(255, 193, 7, 0.68)';\n"
+            "  setTimeout(() => { elem.style.backgroundColor = originalBg || ''; }, 700);\n"
+            "  return '1';\n"
+            "})();"
+        ) % annotation_id.replace('"', '\\"')
+
+        def _schedule_retry():
+            if attempt + 1 >= max_attempts:
+                print(f"[ANNOTATION] ⚠️ Could not focus annotation {annotation_id} after {max_attempts} attempts")
+                return
+            GLib.timeout_add(
+                180 + (attempt * 45),
+                lambda: (self._focus_annotation_with_retry(
+                    annotation,
+                    attempt=attempt + 1,
+                    max_attempts=max_attempts
+                ), False)[1]
+            )
+
+        def _on_result(webview, result, _user_data):
+            found = False
+            try:
+                val = webview.evaluate_javascript_finish(result)
+                raw = str(val).strip().lower()
+                m = re.search(r"(true|false|1|0)", raw)
+                if m:
+                    found = m.group(1) in ("true", "1")
+            except Exception:
+                found = False
+
+            if found:
+                self._pending_annotation_focus = None
+                GLib.timeout_add(100, self._snap_to_current_column)
+            else:
+                _schedule_retry()
+
+        try:
+            self.webview.evaluate_javascript(js, -1, None, None, None, _on_result, None)
+        except Exception:
+            try:
+                self.webview.run_javascript(js, None, None, None)
+            except Exception:
+                pass
+            _schedule_retry()
+        return False
     
     def _remove_annotation(self, annotation_id):
         """Remove an annotation."""
@@ -10208,12 +10679,12 @@ class EPubViewer(Adw.ApplicationWindow):
         if self.webview:
             js = f"""
             (function() {{
-                const elem = document.querySelector('[data-annotation-id="{annotation_id}"]');
-                if (elem) {{
+                document.querySelectorAll('[data-annotation-id="{annotation_id}"]').forEach((elem) => {{
                     const parent = elem.parentElement;
                     const text = elem.textContent;
                     elem.replaceWith(text);
-                }}
+                    if (parent) parent.normalize();
+                }});
             }})();
             """
             self._execute_js(js)
@@ -10304,6 +10775,14 @@ class EPubViewer(Adw.ApplicationWindow):
                     self._apply_annotation_highlight(annotation)
             else:
                 print(f"[ANNOTATION] No highlights to apply for chapter {self.current_index}")
+
+            pending = getattr(self, "_pending_annotation_focus", None)
+            if pending and pending.get('chapter_index') == self.current_index:
+                GLib.timeout_add(120, lambda: (self._focus_annotation_with_retry(
+                    pending,
+                    attempt=0,
+                    max_attempts=10
+                ), False)[1])
         except Exception as e:
             print(f"[ANNOTATION] Error re-applying highlights: {e}")
     
