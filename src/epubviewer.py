@@ -3540,9 +3540,6 @@ class EPubViewer(Adw.ApplicationWindow):
 
     def update_webview_theme(self):
         """Inject current theme colors into webview via JavaScript."""
-        if not getattr(self, "webview", None) or not getattr(self, "book", None):
-            return
-        
         # Use current instance colors
         bg = getattr(self, "current_page_bg", "#ffffff")
         fg = getattr(self, "current_text_fg", "#000000")
@@ -3556,64 +3553,74 @@ class EPubViewer(Adw.ApplicationWindow):
         menu_border = "rgba(128,128,128,0.3)"
         menu_shadow = "rgba(0,0,0,0.3)" if is_dark else "rgba(0,0,0,0.15)"
         
-        print(f"🎨 Injecting theme colors into WebView: bg={bg}, fg={fg}")
+        print(f"🎨 Injecting theme colors: bg={bg}, fg={fg}")
 
-        try:
-            js = f"""
-                (function() {{
-                    const applyTheme = () => {{
-                        const bg = '{bg}';
-                        const fg = '{fg}';
-                        
-                        // Set CSS variables for UI components (like context menu)
-                        document.documentElement.style.setProperty('--theme-bg', bg);
-                        document.documentElement.style.setProperty('--theme-fg', fg);
-                        document.documentElement.style.setProperty('--theme-menu-bg', '{menu_bg}');
-                        document.documentElement.style.setProperty('--theme-menu-fg', '{menu_fg}');
-                        document.documentElement.style.setProperty('--theme-menu-hover', '{menu_hover}');
-                        document.documentElement.style.setProperty('--theme-menu-border', '{menu_border}');
-                        document.documentElement.style.setProperty('--theme-menu-shadow', '{menu_shadow}');
-                        
-                        const targets = [
-                            document.documentElement,
-                            document.body,
-                            document.querySelector('.ebook-content'),
-                            ...Array.from(document.querySelectorAll('*[style*="background-color"]'))
-                        ];
-                        
-                        targets.forEach(el => {{
-                            if (!el) return;
-                            el.style.setProperty('background-color', bg, 'important');
-                            el.style.setProperty('color', fg, 'important');
-                            el.style.setProperty('background', bg, 'important');
-                        }});
-
-                        // Set a global CSS override as well
-                        let s = document.getElementById('theme-js-override');
-                        if (!s) {{
-                            s = document.createElement('style');
-                            s.id = 'theme-js-override';
-                            document.head.appendChild(s);
-                        }}
-                        s.textContent = `
-                            html, body, .ebook-content {{
-                                background-color: ${{bg}} !important;
-                                background: ${{bg}} !important;
-                                color: ${{fg}} !important;
-                            }}
-                            * {{
-                                border-color: rgba(128,128,128,0.2) !important;
-                            }}
-                        `;
-                    }};
+        js = f"""
+            (function() {{
+                const applyTheme = () => {{
+                    const bg = '{bg}';
+                    const fg = '{fg}';
                     
-                    applyTheme();
-                    return "theme_updated_robustly";
-                }})();
-            """
-            self.webview.evaluate_javascript(js, -1, None, None, None, None, None)
-        except Exception as e:
-            print("❌ Failed to inject theme JS:", e)
+                    // Set CSS variables for UI components
+                    document.documentElement.style.setProperty('--theme-bg', bg);
+                    document.documentElement.style.setProperty('--theme-fg', fg);
+                    document.documentElement.style.setProperty('--theme-menu-bg', '{menu_bg}');
+                    document.documentElement.style.setProperty('--theme-menu-fg', '{menu_fg}');
+                    document.documentElement.style.setProperty('--theme-menu-hover', '{menu_hover}');
+                    document.documentElement.style.setProperty('--theme-menu-border', '{menu_border}');
+                    document.documentElement.style.setProperty('--theme-menu-shadow', '{menu_shadow}');
+                    
+                    const targets = [
+                        document.documentElement,
+                        document.body,
+                        document.querySelector('.ebook-content'),
+                        ...Array.from(document.querySelectorAll('*[style*="background-color"]'))
+                    ];
+                    
+                    targets.forEach(el => {{
+                        if (!el) return;
+                        el.style.setProperty('background-color', bg, 'important');
+                        el.style.setProperty('color', fg, 'important');
+                        el.style.setProperty('background', bg, 'important');
+                    }});
+
+                    // Set a global CSS override as well
+                    let s = document.getElementById('theme-js-override');
+                    if (!s) {{
+                        s = document.createElement('style');
+                        s.id = 'theme-js-override';
+                        document.head.appendChild(s);
+                    }}
+                    s.textContent = `
+                        html, body, .ebook-content {{
+                            background-color: ${{bg}} !important;
+                            background: ${{bg}} !important;
+                            color: ${{fg}} !important;
+                        }}
+                        * {{
+                            border-color: rgba(128,128,128,0.2) !important;
+                        }}
+                    `;
+                }};
+                
+                applyTheme();
+                return "theme_updated";
+            }})();
+        """
+        
+        # Apply to main reader webview
+        if getattr(self, "webview", None):
+            try:
+                self.webview.evaluate_javascript(js, -1, None, None, None, None, None)
+            except Exception as e:
+                print("❌ Failed to inject theme JS into reader:", e)
+                
+        # Apply to dictionary webview
+        if getattr(self, "dict_webview", None):
+            try:
+                self.dict_webview.evaluate_javascript(js, -1, None, None, None, None, None)
+            except Exception as e:
+                print("❌ Failed to inject theme JS into dictionary:", e)
 
 
 
@@ -11348,48 +11355,30 @@ class EPubViewer(Adw.ApplicationWindow):
             <meta charset="utf-8">
             <meta name="color-scheme" content="light dark">
             <style>
+                :root {{
+                    --bg: var(--theme-bg, #ffffff);
+                    --fg: var(--theme-fg, #333);
+                    --accent: #1976d2;
+                    --secondary: #666;
+                }}
+                
                 body {{
                     font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
                     padding: 15px;
                     line-height: 1.6;
-                    color: #333;
-                    background-color: #fff;
-                }}
-                
-                @media (prefers-color-scheme: dark) {{
-                    body {{
-                        color: #e0e0e0;
-                        background-color: #1e1e1e;
-                    }}
-                    h2 {{
-                        color: #64b5f6 !important;
-                        border-bottom-color: #64b5f6 !important;
-                    }}
-                    h3 {{
-                        color: #bdbdbd !important;
-                    }}
-                    .definition-number {{
-                        color: #64b5f6 !important;
-                    }}
-                    .example {{
-                        color: #999 !important;
-                    }}
-                    .no-definition {{
-                        color: #ef5350 !important;
-                    }}
-                    a {{
-                        color: #64b5f6 !important;
-                    }}
+                    color: var(--fg);
+                    background-color: var(--bg);
                 }}
                 
                 h2 {{
-                    color: #1976d2;
+                    color: var(--accent);
                     margin-top: 0;
-                    border-bottom: 2px solid #1976d2;
+                    border-bottom: 2px solid var(--accent);
                     padding-bottom: 5px;
                 }}
                 h3 {{
-                    color: #424242;
+                    color: var(--fg);
+                    opacity: 0.9;
                     margin-top: 20px;
                     margin-bottom: 10px;
                 }}
@@ -11399,13 +11388,14 @@ class EPubViewer(Adw.ApplicationWindow):
                 }}
                 .definition-number {{
                     font-weight: bold;
-                    color: #1976d2;
+                    color: var(--accent);
                 }}
                 .example {{
-                    color: #666;
+                    color: var(--secondary);
                     font-style: italic;
                     margin-left: 40px;
                     margin-top: 5px;
+                    opacity: 0.8;
                 }}
                 .no-definition {{
                     color: #d32f2f;
@@ -11413,11 +11403,18 @@ class EPubViewer(Adw.ApplicationWindow):
                     text-align: center;
                 }}
                 a {{
-                    color: #1976d2;
+                    color: var(--accent);
                     text-decoration: none;
                 }}
                 a:hover {{
                     text-decoration: underline;
+                }}
+                
+                /* Dark mode dynamic adjustments if needed */
+                @media (prefers-color-scheme: dark) {{
+                    :root {{
+                        --accent: #64b5f6;
+                    }}
                 }}
             </style>
             <script>
@@ -11468,10 +11465,12 @@ class EPubViewer(Adw.ApplicationWindow):
         return ''.join(html_parts)
     
     def _set_dict_html(self, html_content):
-        """Set HTML content in dictionary WebView."""
+        """Set HTML content in dictionary WebView and apply theme."""
         try:
             if self.dict_webview is not None:
                 self.dict_webview.load_html(html_content, "about:blank")
+                # Immediately ensure theme is applied to new content
+                GLib.timeout_add(100, self.update_webview_theme)
         except Exception as e:
             print(f"[DICT] Error setting HTML: {e}")
     
