@@ -7871,6 +7871,10 @@ class EPubViewer(Adw.ApplicationWindow):
                 # Bookmarks/annotations already initialized to empty earlier
                 print(f"[LOAD] ℹ️ New book - using empty bookmarks/annotations")
                 
+                # Update UI to clear previous book's data
+                self._update_bookmarks_list()
+                self._update_annotations_list()
+                
                 # Re-enable auto-save for new book
                 self._loading_book = False
                 print(f"[LOAD] 🔓 Auto-save re-enabled (new book)")
@@ -9621,95 +9625,117 @@ class EPubViewer(Adw.ApplicationWindow):
         def js_escape(text):
             return text.replace('\\', '\\\\').replace("'", "\\'").replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
 
+        full_text = js_escape(auto_bm.get('text_context', '')[:800])
         search_text = js_escape(selected_text[:250])
-        context_before = js_escape(text_before[:100])
-        context_after = js_escape(text_after[:100])
+        tail_text = js_escape(auto_bm.get('tail_text', '')[:100])
+        first_offset = auto_bm.get('first_offset', 0)
 
         js_template = """
         (function() {
             try {
-                const targetText = '[[SEARCH_TEXT]]';
+                const anchorText = '[[SEARCH_TEXT]]';
+                const tailText = '[[TAIL_TEXT]]';
+                const savedOffset = [[FIRST_OFFSET]];
                 const container = document.querySelector('.ebook-content') || document.body;
                 if (!container) return 'no-container';
-                if (!targetText) return 'no-text';
 
                 function normalize(s) {
                     return (s || '').replace(/[\\s\\u00A0\\u2000-\\u200B]+/g, ' ').trim();
                 }
 
-                const query = normalize(targetText);
-                if (query.length < 4) return 'too-short';
+                const queryAnchor = normalize(anchorText);
+                const queryTail = normalize(tailText);
 
-                console.log('[BOOKMARK] Search attempt [[ATTEMPT]]: "' + query.substring(0, 50) + '..."');
+                console.log('[BOOKMARK] Search attempt [[ATTEMPT]]: "' + queryAnchor.substring(0, 40) + '..."');
 
-                const allElems = container.querySelectorAll('p, div, li, h1, h2, h3, h4, h5, h6, span, blockquote');
-                let foundElem = null;
+                const allElems = container.querySelectorAll('p, blockquote, li, h1, h2, h3, h4, h5, h6, div, span');
+                let foundStart = null;
+                let foundEnd = null;
 
-                // 1. Precise match pass
+                // 1. Find start anchor (leaf nodes preferred)
                 for (let el of allElems) {
-                    if (el.children.length > 5) continue;
+                    if (el.querySelector('p, li, blockquote')) continue; // Skip containers
                     const elText = normalize(el.textContent);
-                    if (elText.includes(query) || (query.length > 30 && elText.length > 30 && query.includes(elText))) {
-                        foundElem = el;
+                    if (elText.includes(queryAnchor) || (queryAnchor.length > 20 && elText.includes(queryAnchor.substring(0, 30)))) {
+                        foundStart = el;
                         break;
                     }
                 }
 
-                // 2. TreeWalker fallback for text nodes if element-based fails
-                if (!foundElem) {
+                // 2. Find tail anchor (leaf nodes preferred)
+                if (foundStart && queryTail.length > 5) {
+                    for (let i = allElems.length - 1; i >= 0; i--) {
+                        const el = allElems[i];
+                        if (el.querySelector('p, li, blockquote')) continue; // Skip containers
+                        const elText = normalize(el.textContent);
+                        if (elText.includes(queryTail) || (queryTail.length > 20 && elText.includes(queryTail.substring(0, 30)))) {
+                            foundEnd = el;
+                            break;
+                        }
+                    }
+                }
+
+                // 3. TreeWalker fallback for start anchor
+                if (!foundStart) {
                     const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
                     let node;
                     while (node = walker.nextNode()) {
                         const nodeText = normalize(node.textContent);
-                        if (nodeText.length > 10 && (nodeText.includes(query) || query.includes(nodeText))) {
-                            foundElem = node.parentElement;
+                        if (nodeText.length > 10 && (nodeText.includes(queryAnchor) || queryAnchor.includes(nodeText))) {
+                            foundStart = node.parentElement;
                             break;
                         }
                     }
                 }
 
-                // 3. Last resort partial match
-                if (!foundElem && query.length > 40) {
-                    const sub = query.substring(0, 40);
-                    for (let el of allElems) {
-                        if (el.children.length > 5) continue;
-                        if (normalize(el.textContent).includes(sub)) {
-                            foundElem = el;
-                            break;
-                        }
-                    }
-                }
-
-                if (foundElem) {
-                    const rect = foundElem.getBoundingClientRect();
-                    const viewH = window.innerHeight;
-                    const viewW = window.innerWidth;
+                if (foundStart) {
+                    const rect = foundStart.getBoundingClientRect();
                     
-                    // Center vertically or horizontally depending on mode
+                    // Positioning: Apply saved offset for pixel-perfect restoration
                     if (typeof window.getContainerMetrics === 'function' && typeof window.scrollToColumnIndex === 'function') {
                         const m = window.getContainerMetrics();
                         if (m && m.colCount > 1) {
                             const containerRect = container.getBoundingClientRect();
                             const relLeft = container.scrollLeft + rect.left - containerRect.left;
                             const colIdx = Math.floor(relLeft / m.pageWidth);
-                            // Immediate scroll (false) for reopening to avoid snap conflicts
                             window.scrollToColumnIndex(colIdx, false);
-                            console.log('[BOOKMARK] Multi-column snapped to col ' + colIdx);
                         } else {
-                            foundElem.scrollIntoView({behavior: 'auto', block: 'center'});
-                            console.log('[BOOKMARK] Single-column vertical scroll');
+                            // Single column: apply precise offset
+                            const containerRect = container.getBoundingClientRect();
+                            const targetScroll = container.scrollTop + rect.top - containerRect.top - savedOffset;
+                            container.scrollTop = targetScroll;
+                            console.log('[BOOKMARK] Applied offset restoration: ' + savedOffset);
                         }
                     } else {
-                        foundElem.scrollIntoView({behavior: 'auto', block: 'center'});
+                        const containerRect = container.getBoundingClientRect();
+                        const targetScroll = container.scrollTop + rect.top - containerRect.top - savedOffset;
+                        container.scrollTop = targetScroll;
                     }
 
-                    // Apply highlight
-                    const originalBg = foundElem.style.backgroundColor;
-                    foundElem.style.transition = 'background-color 0.8s ease';
-                    foundElem.style.backgroundColor = 'rgba(255, 235, 59, 0.4)';
-                    setTimeout(() => {
-                        foundElem.style.backgroundColor = originalBg || '';
-                    }, 3500);
+                    // Range Highlight: from foundStart to foundEnd
+                    const toHighlight = [foundStart];
+                    if (foundEnd && foundEnd !== foundStart) {
+                        // Verify foundEnd is actually AFTER foundStart to avoid infinite loop
+                        if (foundStart.compareDocumentPosition(foundEnd) & Node.DOCUMENT_POSITION_FOLLOWING) {
+                            let current = foundStart.nextElementSibling;
+                            let safety = 0;
+                            while (current && current !== foundEnd && safety < 100) {
+                                if (current.textContent.trim().length > 0) toHighlight.push(current);
+                                current = current.nextElementSibling;
+                                safety++;
+                            }
+                            toHighlight.push(foundEnd);
+                        }
+                    }
+
+                    toHighlight.forEach(el => {
+                        const originalBg = el.style.backgroundColor;
+                        el.style.transition = 'background-color 0.8s ease';
+                        el.style.backgroundColor = 'rgba(255, 235, 59, 0.4)';
+                        setTimeout(() => {
+                            el.style.backgroundColor = originalBg || '';
+                        }, 4000);
+                    });
 
                     return '1';
                 }
@@ -9720,7 +9746,10 @@ class EPubViewer(Adw.ApplicationWindow):
             }
         })();
         """
-        js = js_template.replace('[[SEARCH_TEXT]]', search_text).replace('[[ATTEMPT]]', str(attempt+1))
+        js = js_template.replace('[[SEARCH_TEXT]]', search_text) \
+                        .replace('[[TAIL_TEXT]]', tail_text) \
+                        .replace('[[FIRST_OFFSET]]', str(first_offset)) \
+                        .replace('[[ATTEMPT]]', str(attempt+1))
 
         def _retry_later():
             if attempt + 1 >= max_attempts:
@@ -10158,39 +10187,46 @@ class EPubViewer(Adw.ApplicationWindow):
                     if (!container) return JSON.stringify({error: 'no-container'});
                     const viewH = window.innerHeight;
                     const viewW = window.innerWidth;
-                    let elements = container.querySelectorAll('p, blockquote, li, h1, h2, h3, h4, h5, h6, div, span, section, article');
-                    let contextElem = null;
-                    for (let i = elements.length - 1; i >= 0; i--) {
-                        const elem = elements[i];
-                        if (elem.children.length > 5 && i < elements.length - 1) continue;
+                    
+                    const blockTags = 'p, blockquote, li, h1, h2, h3, h4, h5, h6, div, span, section, article';
+                    let allPotential = container.querySelectorAll(blockTags);
+                    let visibleElements = [];
+                    let fullTextParts = [];
+                    
+                    // Filter for "leaf-ish" nodes in viewport
+                    for (let i = 0; i < allPotential.length; i++) {
+                        const elem = allPotential[i];
+                        
+                        // Check if has children that are also in our targeted block tags
+                        // This helps us find the "deepest" elements (leaves)
+                        const hasInnerBlock = elem.querySelector('p, blockquote, li, h1, h2, h3, h4, h5, h6');
+                        if (hasInnerBlock) continue;
+                        
                         const rect = elem.getBoundingClientRect();
                         const text = (elem.textContent || '').trim();
-                        if (text.length < 15) continue; 
-                        if (rect.top < viewH - 30 && rect.bottom > 30 && rect.left < viewW - 30 && rect.right > 30) {
-                            contextElem = elem;
-                            break;
+                        if (text.length < 5) continue;
+                        
+                        // Strict viewport check
+                        if (rect.bottom > 20 && rect.top < viewH - 20 && rect.right > 20 && rect.left < viewW - 20) {
+                            visibleElements.push(elem);
+                            fullTextParts.push(text);
                         }
                     }
-                    if (!contextElem) {
+                    
+                    if (visibleElements.length === 0) {
                         const el = document.elementFromPoint(viewW / 2, viewH / 2);
-                        if (el && el !== container) contextElem = el;
-                    }
-                    if (!contextElem) return JSON.stringify({error: 'no-element'});
-
-                    let textContent = contextElem.textContent || '';
-                    let words = textContent.trim().split(/\\s+/).filter(w => w.length > 0);
-                    if (words.length < 30) {
-                        let prev = contextElem.previousElementSibling;
-                        let count = 0;
-                        while (prev && words.length < 60 && count < 3) {
-                            let pt = prev.textContent || '';
-                            let pw = pt.trim().split(/\\s+/).filter(w => w.length > 0);
-                            words = pw.concat(words);
-                            prev = prev.previousElementSibling; count++;
+                        if (el && el !== container) {
+                            visibleElements.push(el);
+                            fullTextParts.push((el.textContent || '').trim());
                         }
                     }
-                    words = words.slice(-70); 
+                    
+                    if (visibleElements.length === 0) return JSON.stringify({error: 'no-element'});
 
+                    const firstElem = visibleElements[0];
+                    const lastElem = visibleElements[visibleElements.length - 1];
+                    const combinedText = fullTextParts.join(' ');
+                    
                     function getPath(el) {
                         const path = [];
                         while (el && el.nodeType === Node.ELEMENT_NODE && el !== container) {
@@ -10201,22 +10237,28 @@ class EPubViewer(Adw.ApplicationWindow):
                     }
 
                     const allText = container.textContent || '';
-                    const mainText = words.join(' ');
-                    const searchIdx = allText.indexOf(mainText);
+                    const anchorText = (firstElem.textContent || '').trim().substring(0, 100);
+                    const searchIdx = allText.indexOf(anchorText);
                     let before = '', after = '';
                     if (searchIdx >= 0) {
-                        const bt = allText.substring(Math.max(0, searchIdx - 200), searchIdx);
-                        const at = allText.substring(searchIdx + mainText.length, Math.min(allText.length, searchIdx + mainText.length + 200));
-                        before = bt.trim().split(/\\s+/).slice(-25).join(' ');
-                        after = at.trim().split(/\\s+/).slice(0, 25).join(' ');
+                        const bt = allText.substring(Math.max(0, searchIdx - 300), searchIdx);
+                        const at = allText.substring(searchIdx + anchorText.length, Math.min(allText.length, searchIdx + anchorText.length + 300));
+                        before = bt.trim().split(/\\s+/).slice(-30).join(' ');
+                        after = at.trim().split(/\\s+/).slice(0, 30).join(' ');
                     }
 
+                    const firstRect = firstElem.getBoundingClientRect();
+                    const containerRect = container.getBoundingClientRect();
+
                     return JSON.stringify({
-                        text_context: mainText,
-                        path: getPath(contextElem),
-                        selectedText: mainText,
+                        text_context: combinedText,
+                        path: getPath(firstElem),
+                        selectedText: anchorText,
+                        tail_text: (lastElem.textContent || '').trim().substring(0, 100),
                         before: before,
-                        after: after
+                        after: after,
+                        element_count: visibleElements.length,
+                        first_offset: firstRect.top - containerRect.top
                     });
                 } catch (e) { return JSON.stringify({error: e.toString()}); }
             })();
@@ -10409,11 +10451,8 @@ class EPubViewer(Adw.ApplicationWindow):
         print(f"[BOOKMARK] 🔄 Updating UI with {len(self.bookmarks)} bookmarks")
         
         # Clear existing
-        while True:
-            row = self.bm_listbox.get_first_child()
-            if not row:
-                break
-            self.bm_listbox.remove(row)
+        while (child := self.bm_listbox.get_first_child()) is not None:
+            self.bm_listbox.remove(child)
         
         if not self.bookmarks:
             label = Gtk.Label(label="No bookmarks yet")
@@ -10832,6 +10871,10 @@ class EPubViewer(Adw.ApplicationWindow):
                 break
             self.ann_listbox.remove(child)
         
+        # Ensure it's really empty (GTK4 edge cases)
+        while (child := self.ann_listbox.get_first_child()) is not None:
+            self.ann_listbox.remove(child)
+        
         if not self.annotations:
             label = Gtk.Label(label="No annotations yet")
             label.set_margin_top(20)
@@ -10994,24 +11037,54 @@ class EPubViewer(Adw.ApplicationWindow):
         return False
     
     def _remove_annotation(self, annotation_id):
-        """Remove an annotation."""
+        """Remove an annotation and update UI immediately."""
+        print(f"[ANNOTATION] 🗑️ Removing annotation: {annotation_id}")
+        
+        # Remove from data
+        initial_count = len(self.annotations)
         self.annotations = [a for a in self.annotations if a['id'] != annotation_id]
-        self._update_annotations_list()
+        
+        if len(self.annotations) == initial_count:
+            print(f"[ANNOTATION] ⚠️ Annotation {annotation_id} not found in list")
+            return
+
+        # Update sidebar UI immediately
+        GLib.idle_add(lambda: (self._update_annotations_list(), False)[1])
         self._save_annotations()
         
-        # Remove highlight from text
+        # Remove highlight from text via JS
         if self.webview:
+            # Robust JS removal
             js = f"""
             (function() {{
-                document.querySelectorAll('[data-annotation-id="{annotation_id}"]').forEach((elem) => {{
+                const annotationId = "{annotation_id}";
+                console.log('[JS] Attempting to remove annotation: ' + annotationId);
+                
+                // 1. Direct search by attribute
+                let elements = document.querySelectorAll('[data-annotation-id="' + annotationId + '"]');
+                
+                if (elements.length === 0) {{
+                    console.log('[JS] No elements found with data-annotation-id="' + annotationId + '", searching all annotation spans...');
+                    // 2. Fallback: search all annotation spans if ID might have been lost or modified
+                    elements = Array.from(document.querySelectorAll('span.annotation')).filter(el => 
+                        el.getAttribute('data-annotation-id') === annotationId
+                    );
+                }}
+
+                elements.forEach((elem) => {{
                     const parent = elem.parentElement;
                     const text = elem.textContent;
                     elem.replaceWith(text);
                     if (parent) parent.normalize();
+                    console.log('[JS] Removed annotation highlight element');
                 }});
+                
+                return elements.length > 0;
             }})();
             """
             self._execute_js(js)
+        
+        print(f"[ANNOTATION] ✓ Annotation {annotation_id} removal triggered")
     
     def _save_annotations(self):
         """Save annotations to file."""
