@@ -2107,7 +2107,8 @@ class EPubViewer(Adw.ApplicationWindow):
         self.book_path = None
         
         # Simple scroll position tracking with debug
-        self.saved_scroll_positions = {}  # {chapter_index: (scrollLeft, scrollTop)}
+        # Keep only the latest resume position per book (single chapter entry).
+        self.saved_scroll_positions = {}  # {chapter_index: position_dict}
         self._chapter_progress_starts = []
         self._chapter_progress_sizes = []
         self._continuous_scroll_sync_id = None
@@ -3131,6 +3132,19 @@ class EPubViewer(Adw.ApplicationWindow):
         # periodic update of TTS button states
         GLib.timeout_add(400, self._update_tts_button_states)
 
+    def _js_val_to_str(self, val):
+        """Safely convert a JSCValue (from evaluate_javascript_finish) to a Python string."""
+        if val is None:
+            return ""
+        try:
+            if hasattr(val, 'to_string'):
+                s = val.to_string()
+                if s is not None:
+                    return str(s)
+        except Exception:
+            pass
+        return str(val)
+
     def _schedule_js_scroll_sync(self):
         """Request a JS-side scroll/progress sync (throttled)."""
         if not getattr(self, "webview", None):
@@ -3352,6 +3366,16 @@ class EPubViewer(Adw.ApplicationWindow):
         intra = chapter_float - idx
         return idx, max(0.0, min(1.0, intra))
 
+    def _set_book_resume_position(self, chapter_index, position_data):
+        """Store only the latest auto-saved position for the current book."""
+        try:
+            idx = int(chapter_index)
+        except Exception:
+            return
+        if not isinstance(position_data, dict):
+            return
+        self.saved_scroll_positions = {idx: position_data}
+
     def _on_vertical_scroll(self, adj):
         """Handle vertical scroll from GTK ScrolledWindow (single-column mode)."""
         # Always reset the timer first so the throttle can accept new events
@@ -3380,13 +3404,13 @@ class EPubViewer(Adw.ApplicationWindow):
                 self.pct_label.set_label(f"{int(overall * 100)} %")
                 # Save position
                 if self.current_index is not None:
-                    self.saved_scroll_positions[self.current_index] = {
+                    self._set_book_resume_position(self.current_index, {
                         'mode': 'single',
                         'scrollLeft': 0,
                         'scrollTop': int(val),
                         'columnIndex': None,
                         'percentage': page_pct
-                    }
+                    })
                 self._update_page_nav_buttons(page_pct)
             self._schedule_js_scroll_sync()
         except Exception:
@@ -3421,13 +3445,13 @@ class EPubViewer(Adw.ApplicationWindow):
                 self.pct_label.set_label(f"{int(overall * 100)} %")
                 # Save position
                 if self.current_index is not None:
-                    self.saved_scroll_positions[self.current_index] = {
+                    self._set_book_resume_position(self.current_index, {
                         'mode': 'multi',
                         'scrollLeft': int(val),
                         'scrollTop': 0,
                         'columnIndex': None,
                         'percentage': page_pct
-                    }
+                    })
                 self._update_page_nav_buttons(page_pct)
                 # Avoid snap churn while rapid button-nav queue is active.
                 if not getattr(self, "_page_nav_busy", False):
@@ -3482,8 +3506,8 @@ class EPubViewer(Adw.ApplicationWindow):
                         if not isinstance(prev, dict):
                             prev = {}
 
-                        # Store comprehensive position data
-                        self.saved_scroll_positions[self.current_index] = {
+                        # Store comprehensive position data (book-level latest only)
+                        self._set_book_resume_position(self.current_index, {
                             'mode': mode,
                             'scrollLeft': left,
                             'scrollTop': top,
@@ -3493,7 +3517,7 @@ class EPubViewer(Adw.ApplicationWindow):
                             'resume_text_before': resume_before or prev.get('resume_text_before', ''),
                             'resume_text_after': resume_after or prev.get('resume_text_after', ''),
                             'resume_timestamp': time.time() if resume_text else prev.get('resume_timestamp')
-                        }
+                        })
                         
                         # Always apply JS progress updates: WebView internal scroll actions
                         # (mouse wheel, scrollbar thumb drag, keyboard) may not update GTK adjustments.
@@ -5416,102 +5440,78 @@ class EPubViewer(Adw.ApplicationWindow):
     # ---- Library UI ----
     def on_library_clicked(self, *_):
         try:
-            if getattr(self, "book", None):
+            if not getattr(self, "book", None):
+                self.show_library()
+                return
+
+            def after_capture():
                 try:
-                    # Save annotations and bookmarks before closing
+                    # Save annotations and bookmarks before showing library
                     self._save_annotations()
                     self._save_bookmarks()
+                    self._cancel_deferred_progress_save()
+                    self._save_progress_for_library()
+                    
                     self.content_sidebar_toggle.set_visible(False)
                     self.split.set_show_sidebar(False)
                     self.split.set_collapsed(False)
-                    self._cancel_deferred_progress_save()
-                    self._save_progress_for_library()
-                except Exception:
-                    pass
-            self.show_library()
+                    self.show_library()
+                except Exception as e:
+                    print(f"[LIBRARY] ❌ Error in after_capture: {e}")
+                    self.show_library()
+
+            print(f"[LIBRARY] 📑 Initiating async auto-bookmark capture for chapter {self.current_index}")
+            self._add_auto_bookmark(self.current_index, capture_from_webview=True, callback=after_capture)
+            
+            # Watchdog for library click
+            GLib.timeout_add(1000, lambda: (
+                after_capture() if self.split.get_show_sidebar() else None,
+                False
+            )[1])
         except Exception:
-            pass
+            self.show_library()
 
     def _on_window_close(self, window):
-        """Handle window close event - save annotations and bookmarks before exiting."""
-        # Second pass after async capture: allow real close to proceed.
+        """Handle window close event - save state before exiting."""
         if getattr(self, "_allow_close_after_save", False):
-            self._allow_close_after_save = False
             return False
 
-        # Ignore repeated close requests while we are capturing final position.
         if getattr(self, "_close_save_in_progress", False):
             return True
 
         print("[APP] 🔒 Window closing, syncing final position and saving state...")
-
-        has_open_book = bool(getattr(self, 'book_path', None) and getattr(self, 'book', None))
-        if not has_open_book:
-            return False
-
         self._close_save_in_progress = True
-        finalize_once = {"done": False}
 
-        def _finalize_close():
-            if finalize_once["done"]:
-                return False
-            finalize_once["done"] = True
+        def finalize():
             try:
-                try:
-                    self._save_annotations()
-                    print("[APP] ✓ Annotations saved on exit")
-                except Exception as e:
-                    print(f"[APP] ⚠️ Error saving annotations on exit: {e}")
-
-                try:
-                    self._save_bookmarks()
-                    print("[APP] ✓ Bookmarks saved on exit")
-                except Exception as e:
-                    print(f"[APP] ⚠️ Error saving bookmarks on exit: {e}")
-
-                try:
-                    self._cancel_deferred_progress_save()
-                    self._save_progress_for_library(force_settings=True)
-                    print("[APP] ✓ Progress saved on exit")
-                except Exception as e:
-                    print(f"[APP] ⚠️ Error saving progress on exit: {e}")
+                self._save_annotations()
+                self._save_bookmarks()
+                self._cancel_deferred_progress_save()
+                self._save_progress_for_library(force_settings=True)
+                print("[APP] ✓ Final state saved")
+            except Exception as e:
+                print(f"[APP] ⚠️ Error saving final state: {e}")
             finally:
                 self._close_save_in_progress = False
                 self._allow_close_after_save = True
                 GLib.idle_add(self.close)
-            return False
 
-        # Ask JS to flush latest scroll/sentence anchor immediately.
-        try:
-            self._eval_js("""
-                (function() {
-                    try {
-                        if (typeof window.sendScrollPositionToPython === 'function') {
-                            window.sendScrollPositionToPython();
-                        }
-                    } catch (e) {}
-                })();
-            """)
-        except Exception:
-            pass
+        if getattr(self, "book", None):
+            # First capture scroll, then bookmark, then finalize
+            def on_bookmark_done():
+                finalize()
 
-        # Capture final scroll coords before persisting.
-        captured = {"done": False}
+            def on_scroll_done():
+                self._add_auto_bookmark(self.current_index, capture_from_webview=True, callback=on_bookmark_done)
 
-        def _on_captured():
-            if captured["done"]:
-                return
-            captured["done"] = True
-            GLib.timeout_add(40, _finalize_close)
+            print("[APP] 📸 Capturing final scroll and bookmark...")
+            self._capture_scroll_with_callback(on_scroll_done)
+            # 2s safety timeout
+            GLib.timeout_add(2000, lambda: (finalize() if self._close_save_in_progress else None, False)[1])
+        else:
+            finalize()
 
-        try:
-            self._capture_scroll_with_callback(_on_captured)
-        except Exception:
-            _on_captured()
-
-        # Safety fallback: never block close if callback does not fire.
-        GLib.timeout_add(280, lambda: (_on_captured(), False)[1])
-        return True
+        return True # Stop close until we are done
 
     def _stop_reading(self, path=None):
         try:
@@ -5841,7 +5841,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     const metrics = getContainerMetrics();
                     if (metrics && metrics.colCount > 1) {
                         const currentCol = getCurrentColumnIndex();
-                        console.log('🔄 Snapping to column ' + currentCol);
+                        console.log('🔄 Snapping to column ' + currentCol + ' after sidebar toggle');
                         scrollToColumnIndex(currentCol, false);
                     }
                 }
@@ -5974,10 +5974,20 @@ class EPubViewer(Adw.ApplicationWindow):
             href = item.href or ""
             fragment = href.split("#", 1)[1] if "#" in href else None
             if isinstance(item.index, int) and item.index >= 0:
-                if fragment and item.index == getattr(self, 'current_index', -1):
-                    self._scroll_to_fragment(fragment)
+                def proceed():
+                    if fragment and item.index == getattr(self, 'current_index', -1):
+                        self._scroll_to_fragment(fragment)
+                    else:
+                        self.current_index = item.index
+                        self.update_navigation()
+                        self.display_page(fragment=fragment)
+                    self._set_toc_selected(item)
+
+                if item.index != getattr(self, 'current_index', -1):
+                    print(f"[TOC] 📑 Async auto-bookmark before TOC navigation to {item.index}")
+                    self._add_auto_bookmark(self.current_index, capture_from_webview=True, callback=proceed)
                 else:
-                    self.current_index = item.index; self.update_navigation(); self.display_page(fragment=fragment)
+                    proceed()
             elif href:
                 try:
                     base = urllib.parse.unquote(href.split("#", 1)[0])
@@ -6047,6 +6057,10 @@ class EPubViewer(Adw.ApplicationWindow):
                     href = it.href or ""
                     fragment = href.split("#", 1)[1] if "#" in href else None
                     if isinstance(it.index, int) and it.index >= 0:
+                        # Add auto-bookmark for current chapter before navigating to a different chapter
+                        if it.index != getattr(self, 'current_index', -1):
+                            print(f"[TOC] 📑 Adding auto-bookmark for chapter {self.current_index} before nested TOC navigation to {it.index}")
+                            self._add_auto_bookmark(self.current_index)
                         if fragment and it.index == getattr(self, 'current_index', -1):
                             self._scroll_to_fragment(fragment)
                         else:
@@ -6358,9 +6372,39 @@ class EPubViewer(Adw.ApplicationWindow):
 
         # Pass column width to JavaScript for dynamic detection
         print(f"📊 Injecting JS with column width: {self.column_width_px}px")
-        
+
         # ENHANCED COLUMN NAVIGATION JAVASCRIPT WITH DYNAMIC COLUMN DETECTION
+        # SCROLL RESTORATION FIX: Disable browser scroll restoration and force top on load
         js_detect_columns = f"""<script>
+            // Disable browser scroll restoration to prevent auto-scrolling on page load
+            if ('scrollRestoration' in history) {{
+                history.scrollRestoration = 'manual';
+            }}
+            
+            // Force scroll to top on initial load to prevent any auto-scrolling
+            (function() {{
+                // Wait for DOM to be ready
+                if (document.readyState === 'loading') {{
+                    document.addEventListener('DOMContentLoaded', function() {{
+                        // Scroll to top immediately
+                        const container = document.querySelector('.ebook-content');
+                        if (container) {{
+                            container.scrollLeft = 0;
+                            container.scrollTop = 0;
+                        }}
+                        window.scrollTo(0, 0);
+                    }});
+                }} else {{
+                    // DOM already ready
+                    const container = document.querySelector('.ebook-content');
+                    if (container) {{
+                        container.scrollLeft = 0;
+                        container.scrollTop = 0;
+                    }}
+                    window.scrollTo(0, 0);
+                }}
+            }})();
+            
             (function() {{
                 const originalLog = console.log;
                 console.log = function(...args) {{
@@ -6370,7 +6414,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     }}
                     originalLog.apply(console, args);
                 }};
-                
+
                 console.log('=== COLUMN SCRIPT LOADED ===');
                 console.log('Column width: {self.column_width_px}px');
                 
@@ -7784,7 +7828,29 @@ class EPubViewer(Adw.ApplicationWindow):
                                 }
                         except Exception as e:
                             print(f"[SCROLL] ⚠️ Error loading position for chapter {k}: {e}")
-                    print(f"[SCROLL] ✓ Loaded positions: {self.saved_scroll_positions}")
+                    # Keep only one chapter position for book-level auto-resume.
+                    current_pos = self.saved_scroll_positions.get(self.current_index)
+                    if current_pos is None and self.saved_scroll_positions:
+                        fallback_idx = None
+                        fallback_score = None
+                        for chapter_idx, pos in self.saved_scroll_positions.items():
+                            ts = None
+                            if isinstance(pos, dict):
+                                ts = pos.get("resume_timestamp")
+                            score = ts if isinstance(ts, (int, float)) else 0.0
+                            if fallback_idx is None or score > fallback_score:
+                                fallback_idx = chapter_idx
+                                fallback_score = score
+                        if fallback_idx is None:
+                            fallback_idx = next(iter(self.saved_scroll_positions.keys()))
+                        self.current_index = int(fallback_idx)
+                        current_pos = self.saved_scroll_positions.get(self.current_index)
+
+                    if current_pos is not None:
+                        self.saved_scroll_positions = {self.current_index: current_pos}
+                    else:
+                        self.saved_scroll_positions = {}
+                    print(f"[SCROLL] ✓ Loaded book-level position: {self.saved_scroll_positions}")
                 else:
                     print(f"[SCROLL] ℹ️ No saved positions found")
                 
@@ -7956,9 +8022,18 @@ class EPubViewer(Adw.ApplicationWindow):
         toc_match = self._find_tocitem_for_candidates(candidates, fragment)
         if toc_match:
             if isinstance(toc_match.index, int) and toc_match.index >= 0:
-                self.current_index = toc_match.index; self.update_navigation()
-                frag = fragment or (toc_match.href.split("#", 1)[1] if "#" in (toc_match.href or "") else None)
-                self.display_page(fragment=frag); return True
+                def proceed():
+                    self.current_index = toc_match.index
+                    self.update_navigation()
+                    frag = fragment or (toc_match.href.split("#", 1)[1] if "#" in (toc_match.href or "") else None)
+                    self.display_page(fragment=frag)
+
+                if toc_match.index != getattr(self, 'current_index', -1):
+                    print(f"[LINK] 📑 Async auto-bookmark before link navigation to {toc_match.index}")
+                    self._add_auto_bookmark(self.current_index, capture_from_webview=True, callback=proceed)
+                else:
+                    proceed()
+                return True
             else:
                 href = toc_match.href or ""
                 candidate_path = None
@@ -8688,44 +8763,30 @@ class EPubViewer(Adw.ApplicationWindow):
     def _navigate_chapter_with_capture(self, step, done_callback=None):
         """Navigate chapters with scroll capture/bookmarking to preserve progress."""
         if not getattr(self, "items", None):
-            if callable(done_callback):
-                done_callback()
+            if callable(done_callback): done_callback()
             return
 
         current = self.current_index if self.current_index is not None else 0
         target = current + int(step)
         if target < 0 or target >= len(self.items):
-            if callable(done_callback):
-                done_callback()
+            if callable(done_callback): done_callback()
             return
 
-        arrow = "➡️" if step > 0 else "⬅️"
-        print(f"\n[SCROLL] {arrow} Chapter boundary reached at chapter {current}, navigating to chapter {target}")
+        print(f"\n[SCROLL] Chapter boundary reached, navigating to {target}")
 
-        capture_done = [False]
         from_index = current
-
         def on_capture_done():
-            if capture_done[0]:
-                return
-            capture_done[0] = True
-            print("[SCROLL] ✓ Capture completed, now navigating chapter")
+            # Now that scroll is captured, capture the bookmark text ASYNC
+            def on_bookmark_done():
+                self.current_index = target
+                self.update_navigation()
+                self.display_page()
+                self._save_progress_for_library(force_settings=True)
+                if callable(done_callback): done_callback()
 
-            self._add_auto_bookmark(from_index)
-            self.current_index = target
-            self.update_navigation()
-            self.display_page()
-            self._save_progress_for_library(force_settings=True)
-            if callable(done_callback):
-                done_callback()
+            self._add_auto_bookmark(from_index, capture_from_webview=True, callback=on_bookmark_done)
 
         self._capture_scroll_with_callback(on_capture_done)
-
-        # Fallback timeout so navigation is not blocked by JS callback delays.
-        GLib.timeout_add(220, lambda: (
-            on_capture_done() if not capture_done[0] else None,
-            False
-        )[1])
 
     def _page_scroll_then_chapter(self, direction, done_callback=None):
         """
@@ -9257,7 +9318,7 @@ class EPubViewer(Adw.ApplicationWindow):
                         prev = self.saved_scroll_positions.get(self.current_index, {})
                         if not isinstance(prev, dict):
                             prev = {}
-                        self.saved_scroll_positions[self.current_index] = {
+                        self._set_book_resume_position(self.current_index, {
                             'mode': 'multi' if left > 0 else 'single',
                             'scrollLeft': left,
                             'scrollTop': top,
@@ -9267,7 +9328,7 @@ class EPubViewer(Adw.ApplicationWindow):
                             'resume_text_before': prev.get('resume_text_before', ''),
                             'resume_text_after': prev.get('resume_text_after', ''),
                             'resume_timestamp': prev.get('resume_timestamp')
-                        }
+                        })
                         print(f"[SCROLL] 💾 Saved position for chapter {self.current_index}: (left={left}, top={top})")
                     else:
                         print(f"[SCROLL] ❌ Could not parse: {val_str}")
@@ -9320,38 +9381,22 @@ class EPubViewer(Adw.ApplicationWindow):
         
         def on_result(webview, result, user_data):
             try:
-                print(f"[SCROLL] 📥 Got result from JS (callback version)")
-                val = webview.evaluate_javascript_finish(result)
-                val_str = str(val)
-                print(f"[SCROLL] Raw value: {val_str}")
+                js_val = webview.evaluate_javascript_finish(result)
+                val_str = self._js_val_to_str(js_val)
+                print(f"[SCROLL] 📥 Got result from JS (callback version): {val_str[:60]}")
                 
-                # Extract numbers with pipe separator
                 if '|' in val_str:
                     import re
-                    match = re.search(r'(\d+)\|(\d+)', val_str)
+                    match = re.search(r'(-?\d+\.?\d*)\|(-?\d+\.?\d*)', val_str)
                     if match:
-                        left = int(match.group(1))
-                        top = int(match.group(2))
-                        print(f"[SCROLL] ✅ Parsed: scrollLeft={left}, scrollTop={top}")
-                        
-                        # Save position (even if 0,0 - that's a valid position!)
-                        prev = self.saved_scroll_positions.get(self.current_index, {})
-                        if not isinstance(prev, dict):
-                            prev = {}
-                        self.saved_scroll_positions[self.current_index] = {
-                            'mode': 'multi' if left > 0 else 'single',
-                            'scrollLeft': left,
-                            'scrollTop': top,
-                            'columnIndex': None,  # We don't have this info here
-                            'percentage': 0.0,  # We don't have this info here
-                            'resume_selected_text': prev.get('resume_selected_text', ''),
-                            'resume_text_before': prev.get('resume_text_before', ''),
-                            'resume_text_after': prev.get('resume_text_after', ''),
-                            'resume_timestamp': prev.get('resume_timestamp')
-                        }
-                        print(f"[SCROLL] 💾 Saved position for chapter {self.current_index}: (left={left}, top={top})")
-                    else:
-                        print(f"[SCROLL] ❌ Could not parse: {val_str}")
+                        try:
+                            left = int(float(match.group(1)))
+                            top = int(float(match.group(2)))
+                            self.last_scroll_left = left
+                            self.last_scroll_top = top
+                            print(f"[SCROLL] ✅ Parsed: scrollLeft={left}, scrollTop={top}")
+                        except (ValueError, IndexError):
+                            print(f"[SCROLL] ⚠️ Could not parse values: {val_str}")
                 else:
                     print(f"[SCROLL] ❌ No pipe separator in: {val_str}")
             except Exception as e:
@@ -9359,9 +9404,9 @@ class EPubViewer(Adw.ApplicationWindow):
                 import traceback
                 traceback.print_exc()
             finally:
-                # Always call the done callback
                 print(f"[SCROLL] 🏁 Calling done_callback")
-                done_callback()
+                if callable(done_callback):
+                    done_callback()
         
         try:
             self.webview.evaluate_javascript(js_code, -1, None, None, None, on_result, None)
@@ -9411,50 +9456,50 @@ class EPubViewer(Adw.ApplicationWindow):
             resume_after = str(saved.get('resume_text_after', '') or '').strip()
         
         # JavaScript to intelligently restore position
-        js_code = f"""
-        (function() {{
+        js_template = """
+        (function() {
             console.log('=== INTELLIGENT RESTORE SCROLL ===');
             
-            setTimeout(function() {{
+            setTimeout(function() {
                 console.log('Restore timer fired');
                 const container = document.querySelector('.ebook-content');
                 console.log('Container found:', container ? 'YES' : 'NO');
                 
-                if (!container) {{
+                if (!container) {
                     console.log('❌ No container found');
                     return;
-                }}
+                }
                 
                 // Wait for layout to be determined
                 const currentMode = window.isSingleColumnMode ? 'single' : 'multi';
-                const savedMode = '{saved_mode}';
-                const savedColIndex = {col_index if col_index is not None else 'null'};
-                const savedPercentage = {percentage};
-                const savedLeft = {left};
-                const savedTop = {top};
+                const savedMode = '[[SAVED_MODE]]';
+                const savedColIndex = [[SAVED_COL_INDEX]];
+                const savedPercentage = [[SAVED_PERCENTAGE]];
+                const savedLeft = [[SAVED_LEFT]];
+                const savedTop = [[SAVED_TOP]];
                 
                 console.log('Current mode:', currentMode);
                 console.log('Saved mode:', savedMode);
                 console.log('Saved column:', savedColIndex);
                 console.log('Saved percentage:', savedPercentage);
                 
-                if (currentMode === savedMode) {{
+                if (currentMode === savedMode) {
                     // Same mode: restore exact position
-                    if (currentMode === 'multi') {{
+                    if (currentMode === 'multi') {
                         // Multi-column mode
-                        if (savedColIndex !== null) {{
+                        if (savedColIndex !== null) {
                             console.log('✓ Restoring to column', savedColIndex);
-                            if (typeof scrollToColumnIndex === 'function') {{
+                            if (typeof scrollToColumnIndex === 'function') {
                                 scrollToColumnIndex(savedColIndex, false);
-                            }} else {{
+                            } else {
                                 container.scrollLeft = savedLeft;
-                            }}
-                        }} else {{
+                            }
+                        } else {
                             console.log('✓ Restoring scrollLeft:', savedLeft);
                             container.scrollLeft = savedLeft;
-                        }}
+                        }
                         container.scrollTop = 0;
-                    }} else {{
+                    } else {
                         // Single-column mode - restore with retry for robustness
                         console.log('✓ Restoring scrollTop:', savedTop);
                         
@@ -9463,55 +9508,60 @@ class EPubViewer(Adw.ApplicationWindow):
                         container.scrollLeft = 0;
                         
                         // Retry after layout settles (critical for single-column)
-                        setTimeout(function() {{
-                            if (Math.abs(container.scrollTop - savedTop) > 10) {{
+                        setTimeout(function() {
+                            if (Math.abs(container.scrollTop - savedTop) > 10) {
                                 console.log('↻ Retry 1: scrollTop was', container.scrollTop, 'setting to', savedTop);
                                 container.scrollTop = savedTop;
-                            }}
-                        }}, 100);
+                            }
+                        }, 100);
                         
                         // Final retry to ensure position
-                        setTimeout(function() {{
-                            if (Math.abs(container.scrollTop - savedTop) > 10) {{
+                        setTimeout(function() {
+                            if (Math.abs(container.scrollTop - savedTop) > 10) {
                                 console.log('↻ Retry 2: scrollTop was', container.scrollTop, 'setting to', savedTop);
                                 container.scrollTop = savedTop;
-                            }} else {{
+                            } else {
                                 console.log('✓✓ Single-column position verified:', container.scrollTop);
-                            }}
-                        }}, 300);
-                    }}
-                }} else {{
+                            }
+                        }, 300);
+                    }
+                } else {
                     // Different mode: use percentage to estimate position
                     console.log('⚠️ Mode changed from', savedMode, 'to', currentMode);
                     console.log('Using percentage fallback:', savedPercentage);
                     
-                    if (currentMode === 'multi') {{
+                    if (currentMode === 'multi') {
                         // Now multi-column, was single-column
                         const metrics = getContainerMetrics ? getContainerMetrics() : null;
-                        if (metrics) {{
+                        if (metrics) {
                             const maxScroll = metrics.container.scrollWidth - metrics.clientWidth;
                             const targetScroll = Math.round(maxScroll * savedPercentage);
                             console.log('Calculated scroll position:', targetScroll, 'of', maxScroll);
                             container.scrollLeft = targetScroll;
                             container.scrollTop = 0;
-                        }} else {{
+                        } else {
                             console.log('❌ Could not get metrics');
-                        }}
-                    }} else {{
+                        }
+                    } else {
                         // Now single-column, was multi-column
                         const maxScroll = container.scrollHeight - container.clientHeight;
                         const targetScroll = Math.round(maxScroll * savedPercentage);
                         console.log('Calculated scroll position:', targetScroll, 'of', maxScroll);
                         container.scrollTop = targetScroll;
                         container.scrollLeft = 0;
-                    }}
-                }}
+                    }
+                }
                 
                 console.log('After restore: scrollLeft=' + container.scrollLeft + ', scrollTop=' + container.scrollTop);
                 console.log('✓ Scroll restored');
-            }}, 300);
-        }})();
+            }, 300);
+        })();
         """
+        js_code = js_template.replace('[[SAVED_MODE]]', saved_mode) \
+                            .replace('[[SAVED_COL_INDEX]]', str(col_index) if col_index is not None else 'null') \
+                            .replace('[[SAVED_PERCENTAGE]]', str(percentage)) \
+                            .replace('[[SAVED_LEFT]]', str(left)) \
+                            .replace('[[SAVED_TOP]]', str(top))
         
         try:
             self.webview.evaluate_javascript(js_code, -1, None, None, None, None, None)
@@ -9534,8 +9584,177 @@ class EPubViewer(Adw.ApplicationWindow):
                 max_attempts=8
             ), False)[1])
 
+        # Also highlight auto-bookmark text if one exists for this chapter
+        GLib.timeout_add(1000, lambda: (self._highlight_auto_bookmark(), False)[1])
+
+    def _highlight_auto_bookmark(self, attempt=0, max_attempts=15):
+        """Highlight auto-bookmark text for the current chapter with retries and robust matching."""
+        if not getattr(self, "webview", None) or self.current_index is None:
+            return False
+
+        # Find the auto-bookmark for current chapter
+        auto_bm = None
+        for b in self.bookmarks:
+            if b.get('type') == 'auto' and b.get('chapter_index') == self.current_index:
+                auto_bm = b
+                break
+
+        if not auto_bm:
+            return False
+
+        # Get text from auto-bookmark
+        selected_text = auto_bm.get('selected_text', '')
+        text_before = auto_bm.get('text_before', '')
+        text_after = auto_bm.get('text_after', '')
+        
+        if not selected_text:
+            selected_text = auto_bm.get('text_context', '')
+        
+        if not selected_text:
+            return False
+
+        if attempt == 0:
+            print(f"\n[REOPEN] 🎯 Restoring chapter {self.current_index} position...")
+            print(f"[REOPEN]    Target: '{selected_text[:70]}...'")
+
+        # Escape for JavaScript
+        def js_escape(text):
+            return text.replace('\\', '\\\\').replace("'", "\\'").replace('"', '\\"').replace('\n', '\\n').replace('\r', '\\r')
+
+        search_text = js_escape(selected_text[:250])
+        context_before = js_escape(text_before[:100])
+        context_after = js_escape(text_after[:100])
+
+        js_template = """
+        (function() {
+            try {
+                const targetText = '[[SEARCH_TEXT]]';
+                const container = document.querySelector('.ebook-content') || document.body;
+                if (!container) return 'no-container';
+                if (!targetText) return 'no-text';
+
+                function normalize(s) {
+                    return (s || '').replace(/[\\s\\u00A0\\u2000-\\u200B]+/g, ' ').trim();
+                }
+
+                const query = normalize(targetText);
+                if (query.length < 4) return 'too-short';
+
+                console.log('[BOOKMARK] Search attempt [[ATTEMPT]]: "' + query.substring(0, 50) + '..."');
+
+                const allElems = container.querySelectorAll('p, div, li, h1, h2, h3, h4, h5, h6, span, blockquote');
+                let foundElem = null;
+
+                // 1. Precise match pass
+                for (let el of allElems) {
+                    if (el.children.length > 5) continue;
+                    const elText = normalize(el.textContent);
+                    if (elText.includes(query) || (query.length > 30 && elText.length > 30 && query.includes(elText))) {
+                        foundElem = el;
+                        break;
+                    }
+                }
+
+                // 2. TreeWalker fallback for text nodes if element-based fails
+                if (!foundElem) {
+                    const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, null, false);
+                    let node;
+                    while (node = walker.nextNode()) {
+                        const nodeText = normalize(node.textContent);
+                        if (nodeText.length > 10 && (nodeText.includes(query) || query.includes(nodeText))) {
+                            foundElem = node.parentElement;
+                            break;
+                        }
+                    }
+                }
+
+                // 3. Last resort partial match
+                if (!foundElem && query.length > 40) {
+                    const sub = query.substring(0, 40);
+                    for (let el of allElems) {
+                        if (el.children.length > 5) continue;
+                        if (normalize(el.textContent).includes(sub)) {
+                            foundElem = el;
+                            break;
+                        }
+                    }
+                }
+
+                if (foundElem) {
+                    const rect = foundElem.getBoundingClientRect();
+                    const viewH = window.innerHeight;
+                    const viewW = window.innerWidth;
+                    
+                    // Center vertically or horizontally depending on mode
+                    if (typeof window.getContainerMetrics === 'function' && typeof window.scrollToColumnIndex === 'function') {
+                        const m = window.getContainerMetrics();
+                        if (m && m.colCount > 1) {
+                            const containerRect = container.getBoundingClientRect();
+                            const relLeft = container.scrollLeft + rect.left - containerRect.left;
+                            const colIdx = Math.floor(relLeft / m.pageWidth);
+                            // Immediate scroll (false) for reopening to avoid snap conflicts
+                            window.scrollToColumnIndex(colIdx, false);
+                            console.log('[BOOKMARK] Multi-column snapped to col ' + colIdx);
+                        } else {
+                            foundElem.scrollIntoView({behavior: 'auto', block: 'center'});
+                            console.log('[BOOKMARK] Single-column vertical scroll');
+                        }
+                    } else {
+                        foundElem.scrollIntoView({behavior: 'auto', block: 'center'});
+                    }
+
+                    // Apply highlight
+                    const originalBg = foundElem.style.backgroundColor;
+                    foundElem.style.transition = 'background-color 0.8s ease';
+                    foundElem.style.backgroundColor = 'rgba(255, 235, 59, 0.4)';
+                    setTimeout(() => {
+                        foundElem.style.backgroundColor = originalBg || '';
+                    }, 3500);
+
+                    return '1';
+                }
+
+                return '0';
+            } catch (e) {
+                return 'error: ' + e.message;
+            }
+        })();
+        """
+        js = js_template.replace('[[SEARCH_TEXT]]', search_text).replace('[[ATTEMPT]]', str(attempt+1))
+
+        def _retry_later():
+            if attempt + 1 >= max_attempts:
+                print(f"[BOOKMARK] ⚠️ Auto-bookmark text not found after {max_attempts} attempts")
+                return
+            delay = 200 + (attempt * 120)
+            GLib.timeout_add(delay, lambda: (self._highlight_auto_bookmark(attempt + 1, max_attempts), False)[1])
+
+        def _on_result(webview, result, _user_data):
+            try:
+                js_val = webview.evaluate_javascript_finish(result)
+                status = self._js_val_to_str(js_val).strip()
+            except Exception as e:
+                print(f"[BOOKMARK] ❌ JS result error: {e}")
+                _retry_later()
+                return
+
+            if status == "1":
+                print(f"[BOOKMARK] ✓ Position restored & highlighted (attempt {attempt+1})")
+            elif status == "0":
+                _retry_later()
+            else:
+                if attempt == 0: print(f"[BOOKMARK] ℹ️ JS status: {status}")
+                _retry_later()
+
+        try:
+            self.webview.evaluate_javascript(js, -1, None, None, None, _on_result, None)
+        except Exception:
+            _retry_later()
+
+        return False
+
     def _restore_resume_anchor(self, sentence, text_before="", text_after="", attempt=0, max_attempts=8):
-        """Restore and briefly highlight a saved sentence near the last reading position."""
+        """Restore a saved sentence anchor near the last reading position."""
         if not getattr(self, "webview", None):
             return False
 
@@ -9562,14 +9781,6 @@ class EPubViewer(Adw.ApplicationWindow):
             "  const pattern = new RegExp(escapeRegExp(sentence).replace(/\\s+/g, '\\\\s+'), 'i');\n"
             "  const beforeNeedle = normalize(beforeCtx).slice(-80);\n"
             "  const afterNeedle = normalize(afterCtx).slice(0, 80);\n"
-            "\n"
-            "  container.querySelectorAll('.resume-anchor-highlight').forEach((el) => {\n"
-            "    const parent = el.parentNode;\n"
-            "    if (!parent) return;\n"
-            "    while (el.firstChild) parent.insertBefore(el.firstChild, el);\n"
-            "    parent.removeChild(el);\n"
-            "    parent.normalize();\n"
-            "  });\n"
             "\n"
             "  let best = null;\n"
             "  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {\n"
@@ -9604,24 +9815,7 @@ class EPubViewer(Adw.ApplicationWindow):
             "\n"
             "  let target = null;\n"
             "  if (best) {\n"
-            "    const range = document.createRange();\n"
-            "    range.setStart(best.node, best.start);\n"
-            "    range.setEnd(best.node, best.end);\n"
-            "    const mark = document.createElement('span');\n"
-            "    mark.className = 'resume-anchor-highlight';\n"
-            "    mark.style.backgroundColor = 'rgba(255, 193, 7, 0.55)';\n"
-            "    mark.style.borderRadius = '3px';\n"
-            "    mark.style.padding = '0 1px';\n"
-            "    mark.style.boxDecorationBreak = 'clone';\n"
-            "    mark.style.transition = 'background-color 0.5s ease';\n"
-            "    try {\n"
-            "      const frag = range.extractContents();\n"
-            "      mark.appendChild(frag);\n"
-            "      range.insertNode(mark);\n"
-            "      target = mark;\n"
-            "    } catch (_err) {\n"
-            "      target = best.node.parentElement || null;\n"
-            "    }\n"
+            "    target = best.node.parentElement || best.node;\n"
             "  }\n"
             "\n"
             "  if (!target) {\n"
@@ -9636,17 +9830,29 @@ class EPubViewer(Adw.ApplicationWindow):
             "    }\n"
             "  }\n"
             "\n"
-            "  if (!target) return '0';\n"
-            "  target.scrollIntoView({ behavior: 'auto', block: 'center' });\n"
-            "  if (!target.classList.contains('resume-anchor-highlight')) {\n"
-            "    target.style.transition = 'background-color 0.5s ease';\n"
-            "    target.style.backgroundColor = 'rgba(255, 193, 7, 0.28)';\n"
-            "    setTimeout(() => { target.style.backgroundColor = ''; }, 3500);\n"
-            "  } else {\n"
-            "    setTimeout(() => { target.style.backgroundColor = 'rgba(255, 193, 7, 0.16)'; }, 800);\n"
-            "    setTimeout(() => { target.style.backgroundColor = ''; }, 3600);\n"
+            "  if (target && target.nodeType === Node.TEXT_NODE) {\n"
+            "    target = target.parentElement;\n"
             "  }\n"
-            "  return '1';\n"
+            "  if (!target) return '0';\n"
+            "  \n"
+            "  // Use scrollToColumnIndex if in multi-column mode\n"
+            "  if (typeof window.getContainerMetrics === 'function' && typeof window.scrollToColumnIndex === 'function') {\n"
+            "      const m = window.getContainerMetrics();\n"
+            "      if (m && m.colCount > 1) {\n"
+            "          const rect = target.getBoundingClientRect();\n"
+            "          const containerRect = container.getBoundingClientRect();\n"
+            "          const relLeft = container.scrollLeft + rect.left - containerRect.left;\n"
+            "          const colIdx = Math.floor(relLeft / m.pageWidth);\n"
+            "          window.scrollToColumnIndex(colIdx, false);\n"
+            "          return '1';\n"
+            "      }\n"
+            "  }\n"
+            "  \n"
+            "  if (typeof target.scrollIntoView === 'function') {\n"
+            "      target.scrollIntoView({ behavior: 'auto', block: 'center', inline: 'center' });\n"
+            "      return '1';\n"
+            "  }\n"
+            "  return '0';\n"
             "})();"
         )
 
@@ -9669,8 +9875,8 @@ class EPubViewer(Adw.ApplicationWindow):
         def _on_result(webview, result, _user_data):
             found = False
             try:
-                val = webview.evaluate_javascript_finish(result)
-                raw = str(val).strip().lower()
+                js_val = webview.evaluate_javascript_finish(result)
+                raw = self._js_val_to_str(js_val).strip().lower()
                 m = re.search(r"(true|false|1|0)", raw)
                 if m:
                     found = m.group(1) in ("true", "1")
@@ -9861,83 +10067,179 @@ class EPubViewer(Adw.ApplicationWindow):
             import traceback
             traceback.print_exc()
     
-    def _add_auto_bookmark(self, chapter_index=None):
-        """Add an automatic bookmark (auto-save) at current or specified position."""
+    def _add_auto_bookmark(self, chapter_index, capture_from_webview=True, callback=None):
+        """
+        Add an auto-save bookmark for the current position.
+        The callback is called after the bookmark is created and saved.
+        """
         if chapter_index is None:
-            chapter_index = self.current_index
-        
-        print(f"[BOOKMARK] 🔄 _add_auto_bookmark called for chapter {chapter_index}")
-        
-        if chapter_index is None or not self.book:
-            print(f"[BOOKMARK] ⚠️ Cannot add auto-bookmark: chapter_index={chapter_index}, book={bool(self.book)}")
+            if callable(callback): callback()
             return
-        
-        # Get text context for auto-bookmark (first 50 words of visible content)
-        text_context = ""
-        dom_path = ""
-        element_index = 0
-        
-        if chapter_index < len(self.items):
-            content = self.items[chapter_index].get_content()
-            from bs4 import BeautifulSoup
-            soup = BeautifulSoup(content, 'html.parser')
-            text = soup.get_text()
-            words = text.strip().split()[:50]
-            text_context = ' '.join(words)
             
-            # For auto-bookmarks, use the first paragraph
-            first_para = soup.find('p')
-            if first_para:
-                dom_path = 'body > p:first-of-type'
-        
-        if not text_context:
-            print(f"[BOOKMARK] ⚠️ No text content for chapter {chapter_index}, skipping auto-bookmark")
-            return
-        
-        chapter_title = self._get_chapter_title(chapter_index)
-        
-        import time
-        bookmark = {
-            'type': 'auto',
-            'chapter_index': chapter_index,
-            'chapter_title': chapter_title,
-            'text_context': text_context,
-            'dom_path': dom_path,
-            'element_index': element_index,
-            'timestamp': time.time(),
-            'note': 'Auto-saved'
+        print(f"\n{'='*60}")
+        print(f"[BOOKMARK] 🔄 _add_auto_bookmark called")
+        print(f"  > CHAPTER: {chapter_index}")
+
+        # Initial state
+        data_final = {
+            'text_context': '',
+            'dom_path': '',
+            'element_index': 0,
+            'selectedText': '',
+            'before': '',
+            'after': ''
         }
-        
-        # Check if we already have a recent auto-bookmark for this chapter
-        # Keep only the most recent auto-bookmark per chapter
-        old_count = len(self.bookmarks)
-        self.bookmarks = [b for b in self.bookmarks 
-                         if not (b['type'] == 'auto' and b['chapter_index'] == chapter_index)]
-        removed_count = old_count - len(self.bookmarks)
-        if removed_count > 0:
-            print(f"[BOOKMARK] 🔄 Replaced {removed_count} old auto-bookmark(s) for chapter {chapter_index}")
-        
-        self.bookmarks.append(bookmark)
-        print(f"[BOOKMARK] 💾 Added auto-save bookmark: {chapter_title}")
-        print(f"[BOOKMARK]    Total bookmarks now: {len(self.bookmarks)}")
-        print(f"[BOOKMARK]    All bookmarks: {[(b['type'], b['chapter_index'], b['chapter_title']) for b in self.bookmarks]}")
-        
-        # Update UI directly (we're already on main thread from navigation callbacks)
-        try:
-            self._update_bookmarks_list()
-            print(f"[BOOKMARK] ✓ UI updated")
-        except Exception as e:
-            print(f"[BOOKMARK] ⚠️ UI update failed: {e}")
-            import traceback
-            traceback.print_exc()
-        
-        # Save to disk
-        try:
-            self._save_bookmarks()
-        except Exception as e:
-            print(f"[BOOKMARK] ⚠️ Save failed: {e}")
-            import traceback
-            traceback.print_exc()
+
+        def finalize_bookmark(data):
+            text_context = data.get('text_context', '')
+            dom_path = data.get('dom_path', '')
+            element_index = data.get('element_index', 0)
+            resume_selected_text = data.get('selectedText', '')
+            resume_text_before = data.get('before', '')
+            resume_text_after = data.get('after', '')
+
+            # Fallback to chapter start if no text captured
+            if not text_context and chapter_index < len(self.items):
+                print(f"[BOOKMARK] 📖 Using FALLBACK: chapter start text")
+                try:
+                    content = self.items[chapter_index].get_content()
+                    from bs4 import BeautifulSoup
+                    soup = BeautifulSoup(content, 'html.parser')
+                    text = soup.get_text().strip()
+                    words = text.split()[:50]
+                    text_context = ' '.join(words)
+                    first_para = soup.find('p')
+                    if first_para: dom_path = 'body > p:first-of-type'
+                except Exception as e:
+                    print(f"[BOOKMARK] ❌ Fallback failed: {e}")
+
+            if not text_context:
+                print(f"[BOOKMARK] ⚠️ No text content, skipping.")
+                if callable(callback): callback()
+                return
+
+            import time
+            chapter_title = self._get_chapter_title(chapter_index)
+            bookmark = {
+                'type': 'auto',
+                'chapter_index': chapter_index,
+                'chapter_title': chapter_title,
+                'text_context': text_context,
+                'dom_path': dom_path,
+                'element_index': element_index,
+                'timestamp': time.time(),
+                'note': 'Auto-saved',
+                'selected_text': resume_selected_text or text_context,
+                'text_before': resume_text_before,
+                'text_after': resume_text_after,
+            }
+
+            self.bookmarks = [b for b in self.bookmarks if b.get('type') != 'auto']
+            self.bookmarks.append(bookmark)
+            print(f"[BOOKMARK] 💾 Saved auto-bookmark: '{text_context[:60]}...'")
+            
+            try: self._update_bookmarks_list()
+            except Exception: pass
+            
+            try: self._save_bookmarks()
+            except Exception: pass
+            
+            print(f"{'='*60}\n")
+            if callable(callback): callback()
+
+        # Try to use JS to get text context from webview
+        if capture_from_webview and getattr(self, "webview", None):
+            print(f"[BOOKMARK] 🔍 Capturing viewport via JS...")
+            
+            js = """
+            (function() {
+                try {
+                    const container = document.querySelector('.ebook-content');
+                    if (!container) return JSON.stringify({error: 'no-container'});
+                    const viewH = window.innerHeight;
+                    const viewW = window.innerWidth;
+                    let elements = container.querySelectorAll('p, blockquote, li, h1, h2, h3, h4, h5, h6, div, span, section, article');
+                    let contextElem = null;
+                    for (let i = elements.length - 1; i >= 0; i--) {
+                        const elem = elements[i];
+                        if (elem.children.length > 5 && i < elements.length - 1) continue;
+                        const rect = elem.getBoundingClientRect();
+                        const text = (elem.textContent || '').trim();
+                        if (text.length < 15) continue; 
+                        if (rect.top < viewH - 30 && rect.bottom > 30 && rect.left < viewW - 30 && rect.right > 30) {
+                            contextElem = elem;
+                            break;
+                        }
+                    }
+                    if (!contextElem) {
+                        const el = document.elementFromPoint(viewW / 2, viewH / 2);
+                        if (el && el !== container) contextElem = el;
+                    }
+                    if (!contextElem) return JSON.stringify({error: 'no-element'});
+
+                    let textContent = contextElem.textContent || '';
+                    let words = textContent.trim().split(/\\s+/).filter(w => w.length > 0);
+                    if (words.length < 30) {
+                        let prev = contextElem.previousElementSibling;
+                        let count = 0;
+                        while (prev && words.length < 60 && count < 3) {
+                            let pt = prev.textContent || '';
+                            let pw = pt.trim().split(/\\s+/).filter(w => w.length > 0);
+                            words = pw.concat(words);
+                            prev = prev.previousElementSibling; count++;
+                        }
+                    }
+                    words = words.slice(-70); 
+
+                    function getPath(el) {
+                        const path = [];
+                        while (el && el.nodeType === Node.ELEMENT_NODE && el !== container) {
+                            path.unshift(el.nodeName.toLowerCase() + (el.id ? '#' + el.id : ''));
+                            el = el.parentNode;
+                        }
+                        return path.join(' > ');
+                    }
+
+                    const allText = container.textContent || '';
+                    const mainText = words.join(' ');
+                    const searchIdx = allText.indexOf(mainText);
+                    let before = '', after = '';
+                    if (searchIdx >= 0) {
+                        const bt = allText.substring(Math.max(0, searchIdx - 200), searchIdx);
+                        const at = allText.substring(searchIdx + mainText.length, Math.min(allText.length, searchIdx + mainText.length + 200));
+                        before = bt.trim().split(/\\s+/).slice(-25).join(' ');
+                        after = at.trim().split(/\\s+/).slice(0, 25).join(' ');
+                    }
+
+                    return JSON.stringify({
+                        text_context: mainText,
+                        path: getPath(contextElem),
+                        selectedText: mainText,
+                        before: before,
+                        after: after
+                    });
+                } catch (e) { return JSON.stringify({error: e.toString()}); }
+            })();
+            """
+
+            def on_js_done(webview, result, user_data):
+                nonlocal data_final
+                try:
+                    js_val = webview.evaluate_javascript_finish(result)
+                    val_str = self._js_val_to_str(js_val)
+                    import json
+                    if val_str and val_str.strip().startswith('{'):
+                        data_final = json.loads(val_str)
+                    else:
+                        print(f"[BOOKMARK] ⚠️ JS returned non-JSON: {val_str[:100]}")
+                except Exception as e:
+                    print(f"[BOOKMARK] ❌ JS capture failed: {e}")
+                
+                finalize_bookmark(data_final)
+
+            self.webview.evaluate_javascript(js, -1, None, None, None, on_js_done, None)
+        else:
+            finalize_bookmark(data_final)
     
     def _remove_bookmark(self, bookmark_index):
         """Remove a bookmark by index."""
@@ -10226,51 +10528,73 @@ class EPubViewer(Adw.ApplicationWindow):
     
     def _load_bookmarks(self):
         """Load bookmarks from file."""
+        print(f"\n{'='*60}")
         print(f"[BOOKMARK] 📂 _load_bookmarks called")
         print(f"[BOOKMARK]    book_path: {self.book_path}")
-        
+
         if not self.book_path:
             self.bookmarks = []
             print(f"[BOOKMARK] ⚠️ No book_path, initializing empty bookmarks")
+            print(f"{'='*60}\n")
             return
-        
+
         try:
             # Get settings file path for debugging
             settings_file = self.library_manager.get_book_settings_file(self.book_path)
             print(f"[BOOKMARK]    Settings file: {settings_file}")
             print(f"[BOOKMARK]    File exists: {os.path.exists(settings_file) if settings_file else False}")
-            
+
             # Bookmarks are now part of book settings
             settings = self.library_manager.load_book_settings(self.book_path)
             print(f"[BOOKMARK]    Loaded settings: {settings is not None}")
-            
+
             if settings:
                 print(f"[BOOKMARK]    Settings keys: {list(settings.keys())}")
                 if 'bookmarks' in settings:
                     print(f"[BOOKMARK]    Bookmarks in settings: {len(settings['bookmarks'])}")
-                
+
             if settings and 'bookmarks' in settings:
                 self.bookmarks = settings['bookmarks']
                 print(f"[BOOKMARK] 📂 Loaded {len(self.bookmarks)} bookmarks from file")
+                
+                # Count auto vs manual bookmarks
+                auto_count = sum(1 for b in self.bookmarks if b.get('type') == 'auto')
+                manual_count = sum(1 for b in self.bookmarks if b.get('type') == 'manual')
+                print(f"[BOOKMARK]    Auto bookmarks: {auto_count}")
+                print(f"[BOOKMARK]    Manual bookmarks: {manual_count}")
+                
                 if self.bookmarks:
-                    print(f"[BOOKMARK]    First bookmark preview:")
-                    b = self.bookmarks[0]
-                    print(f"[BOOKMARK]      - Type: {b.get('type')}")
-                    print(f"[BOOKMARK]      - Chapter: {b.get('chapter_index')} - {b.get('chapter_title')}")
-                    print(f"[BOOKMARK]      - Text: {b.get('text_context', '')[:50]}...")
+                    print(f"[BOOKMARK]    All bookmarks:")
+                    for i, b in enumerate(self.bookmarks):
+                        btype = b.get('type', 'unknown')
+                        ch_idx = b.get('chapter_index', '?')
+                        ch_title = b.get('chapter_title', 'N/A')
+                        # Try multiple text fields
+                        text_preview = 'N/A'
+                        if b.get('selected_text'):
+                            text_preview = b['selected_text'][:40] + '...'
+                        elif b.get('text_context'):
+                            text_preview = b['text_context'][:40] + '...'
+                        elif b.get('resume_selected_text'):
+                            text_preview = b['resume_selected_text'][:40] + '...'
+                        print(f"[BOOKMARK]      [{i}] {btype.upper()} - Ch {ch_idx}: {ch_title}")
+                        print(f"[BOOKMARK]           Text: '{text_preview}'")
+                        print(f"[BOOKMARK]           Timestamp: {b.get('timestamp', 'N/A')}")
             else:
                 self.bookmarks = []
                 print(f"[BOOKMARK] ℹ️ No bookmarks found in settings")
-            
+
             # Update the UI
             print(f"[BOOKMARK] 🔄 Calling _update_bookmarks_list")
             self._update_bookmarks_list()
             print(f"[BOOKMARK] ✓ Bookmarks loaded and UI updated")
+            print(f"{'='*60}\n")
         except Exception as e:
             print(f"[BOOKMARK] ⚠️ Error loading bookmarks: {e}")
             import traceback
             traceback.print_exc()
             self.bookmarks = []
+            print(f"{'='*60}\n")
     
     # ============ END BOOKMARK SYSTEM ============
     
