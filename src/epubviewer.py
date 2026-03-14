@@ -3547,6 +3547,15 @@ class EPubViewer(Adw.ApplicationWindow):
         bg = getattr(self, "current_page_bg", "#ffffff")
         fg = getattr(self, "current_text_fg", "#000000")
         
+        # Derive UI colors for the context menu
+        is_dark = self.style_manager.get_dark()
+        # For the menu, we want a slightly different color than the page background for contrast
+        menu_bg = bg
+        menu_fg = fg
+        menu_hover = "rgba(255,255,255,0.1)" if is_dark else "rgba(0,0,0,0.06)"
+        menu_border = "rgba(128,128,128,0.3)"
+        menu_shadow = "rgba(0,0,0,0.3)" if is_dark else "rgba(0,0,0,0.15)"
+        
         print(f"🎨 Injecting theme colors into WebView: bg={bg}, fg={fg}")
 
         try:
@@ -3555,6 +3564,15 @@ class EPubViewer(Adw.ApplicationWindow):
                     const applyTheme = () => {{
                         const bg = '{bg}';
                         const fg = '{fg}';
+                        
+                        // Set CSS variables for UI components (like context menu)
+                        document.documentElement.style.setProperty('--theme-bg', bg);
+                        document.documentElement.style.setProperty('--theme-fg', fg);
+                        document.documentElement.style.setProperty('--theme-menu-bg', '{menu_bg}');
+                        document.documentElement.style.setProperty('--theme-menu-fg', '{menu_fg}');
+                        document.documentElement.style.setProperty('--theme-menu-hover', '{menu_hover}');
+                        document.documentElement.style.setProperty('--theme-menu-border', '{menu_border}');
+                        document.documentElement.style.setProperty('--theme-menu-shadow', '{menu_shadow}');
                         
                         const targets = [
                             document.documentElement,
@@ -3722,7 +3740,37 @@ class EPubViewer(Adw.ApplicationWindow):
                 box-shadow: 0 4px 10px {shadow};
                 margin-right: 12px;
             }}
-            popover > contents, popover menu {{ background-color: {self.current_page_bg}; color: {self.current_text_fg}; }}
+            
+            /* Enhanced Popover Theme Awareness */
+            popover > contents, 
+            popover menu, 
+            popover box, 
+            popover list, 
+            popover .background {{ 
+                background-color: {self.current_page_bg}; 
+                color: {self.current_text_fg}; 
+                border-color: {hover_bg};
+            }}
+            
+            popover > arrow {{
+                background-color: {self.current_page_bg};
+                border-color: {hover_bg};
+            }}
+            
+            /* GtkPopover arrow styling for different versions of GTK */
+            popover contents {{
+                padding: 4px;
+                border-radius: 8px;
+                background-color: {self.current_page_bg};
+                box-shadow: 0 2px 12px {shadow};
+            }}
+            
+            /* Highlight menu items in popover */
+            popover button:hover, 
+            popover .menu-item:hover, 
+            popover list > row:hover {{
+                background-color: {hover_bg};
+            }}
         """
 
         display = Gdk.Display.get_default()
@@ -7074,66 +7122,74 @@ class EPubViewer(Adw.ApplicationWindow):
                 menu.id = 'annotation-context-menu';
                 menu.style.cssText = `
                     position: fixed;
-                    background: white;
-                    border: 1px solid #ccc;
-                    border-radius: 4px;
+                    background: var(--theme-menu-bg, white);
+                    color: var(--theme-menu-fg, black);
+                    border: 1px solid var(--theme-menu-border, #ccc);
+                    border-radius: 6px;
                     padding: 5px 0;
-                    box-shadow: 2px 2px 10px rgba(0,0,0,0.1);
+                    box-shadow: 0 2px 10px var(--theme-menu-shadow, rgba(0,0,0,0.1));
                     z-index: 10000;
                     display: none;
                     min-width: 150px;
+                    font-family: sans-serif;
+                    font-size: 14px;
                 `;
                 
+                const createMenuItem = (text, onClick, className) => {
+                    const btn = document.createElement('div');
+                    btn.textContent = text;
+                    btn.className = 'context-menu-item' + (className ? ' ' + className : '');
+                    btn.style.cssText = `
+                        padding: 8px 15px;
+                        cursor: pointer;
+                        transition: background 0.1s;
+                    `;
+                    btn.onmouseover = () => btn.style.background = 'var(--theme-menu-hover, #f0f0f0)';
+                    btn.onmouseout = () => btn.style.background = 'transparent';
+                    btn.onclick = onClick;
+                    return btn;
+                };
+
                 if (hasSelection) {
                     // Menu for selected text
-                    const defineBtn = document.createElement('div');
-                    defineBtn.textContent = '📖 Define';
-                    defineBtn.className = 'context-menu-item';
-                    defineBtn.style.cssText = `
-                        padding: 8px 15px;
-                        cursor: pointer;
-                        transition: background 0.2s;
-                    `;
-                    defineBtn.onmouseover = () => defineBtn.style.background = '#f0f0f0';
-                    defineBtn.onmouseout = () => defineBtn.style.background = 'white';
-                    menu.appendChild(defineBtn);
+                    menu.appendChild(createMenuItem('📖 Define', function() {
+                        menu.style.display = 'none';
+                        if (window.webkit && window.webkit.messageHandlers && 
+                            window.webkit.messageHandlers.defineRequest) {
+                            window.webkit.messageHandlers.defineRequest.postMessage(JSON.stringify({
+                                word: window.getSelection().toString().trim()
+                            }));
+                        }
+                    }));
                     
-                    const addNoteBtn = document.createElement('div');
-                    addNoteBtn.textContent = '📝 Add Note';
-                    addNoteBtn.className = 'context-menu-item';
-                    addNoteBtn.style.cssText = `
-                        padding: 8px 15px;
-                        cursor: pointer;
-                        transition: background 0.2s;
-                    `;
-                    addNoteBtn.onmouseover = () => addNoteBtn.style.background = '#f0f0f0';
-                    addNoteBtn.onmouseout = () => addNoteBtn.style.background = 'white';
-                    menu.appendChild(addNoteBtn);
+                    menu.appendChild(createMenuItem('📝 Add Note', function() {
+                        menu.style.display = 'none';
+                        // Use pre-captured details from the click event logic
+                        if (window.webkit && window.webkit.messageHandlers && 
+                            window.webkit.messageHandlers.annotationRequest) {
+                            window.webkit.messageHandlers.annotationRequest.postMessage(JSON.stringify(window._lastMenuContext));
+                        }
+                    }));
                 } else {
                     // Menu for right-click without selection
-                    const speakBtn = document.createElement('div');
-                    speakBtn.textContent = '🔊 Speak from here';
-                    speakBtn.className = 'context-menu-item context-menu-speak';
-                    speakBtn.style.cssText = `
-                        padding: 8px 15px;
-                        cursor: pointer;
-                        transition: background 0.2s;
-                    `;
-                    speakBtn.onmouseover = () => speakBtn.style.background = '#f0f0f0';
-                    speakBtn.onmouseout = () => speakBtn.style.background = 'white';
-                    menu.appendChild(speakBtn);
+                    menu.appendChild(createMenuItem('🔊 Speak from here', function() {
+                        menu.style.display = 'none';
+                        const speakBtn = document.querySelector('.context-menu-speak');
+                        // Speech logic is usually handled by looking for this event
+                        const event = new CustomEvent('speak-from-here', { detail: window._lastMenuContext });
+                        document.dispatchEvent(event);
+                    }, 'context-menu-speak'));
                     
-                    const bookmarkBtn = document.createElement('div');
-                    bookmarkBtn.textContent = '🔖 Add Bookmark Here';
-                    bookmarkBtn.className = 'context-menu-item context-menu-bookmark';
-                    bookmarkBtn.style.cssText = `
-                        padding: 8px 15px;
-                        cursor: pointer;
-                        transition: background 0.2s;
-                    `;
-                    bookmarkBtn.onmouseover = () => bookmarkBtn.style.background = '#f0f0f0';
-                    bookmarkBtn.onmouseout = () => bookmarkBtn.style.background = 'white';
-                    menu.appendChild(bookmarkBtn);
+                    menu.appendChild(createMenuItem('🔖 Add Bookmark Here', function() {
+                        menu.style.display = 'none';
+                        if (window.webkit && window.webkit.messageHandlers && 
+                            window.webkit.messageHandlers.annotationRequest) {
+                            window.webkit.messageHandlers.annotationRequest.postMessage(JSON.stringify({
+                                ...window._lastMenuContext,
+                                type: 'bookmark'
+                            }));
+                        }
+                    }, 'context-menu-bookmark'));
                 }
                 
                 document.body.appendChild(menu);
@@ -7181,32 +7237,12 @@ class EPubViewer(Adw.ApplicationWindow):
                     menu.style.top = e.pageY + 'px';
                     menu.style.display = 'block';
                     
-                    // Handle Define button
-                    menu.querySelector('.context-menu-item:nth-child(1)').onclick = function() {
-                        menu.style.display = 'none';
-                        
-                        if (window.webkit && window.webkit.messageHandlers && 
-                            window.webkit.messageHandlers.defineRequest) {
-                            window.webkit.messageHandlers.defineRequest.postMessage(JSON.stringify({
-                                word: selectedText
-                            }));
-                        }
-                    };
-                    
-                    // Handle Add Note button
-                    menu.querySelector('.context-menu-item:nth-child(2)').onclick = function() {
-                        menu.style.display = 'none';
-                        
-                        // Send annotation request to Python
-                        if (window.webkit && window.webkit.messageHandlers && 
-                            window.webkit.messageHandlers.annotationRequest) {
-                            window.webkit.messageHandlers.annotationRequest.postMessage(JSON.stringify({
-                                text: selectedText,
-                                before: wordsBefore,
-                                after: wordsAfter,
-                                path: path.join(' > ')
-                            }));
-                        }
+                    // Store context for the menu item clicks
+                    window._lastMenuContext = {
+                        text: selectedText,
+                        before: wordsBefore,
+                        after: wordsAfter,
+                        path: path.join(' > ')
                     };
                     
                     // Hide menu on click outside
