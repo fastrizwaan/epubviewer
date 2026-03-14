@@ -3540,6 +3540,9 @@ class EPubViewer(Adw.ApplicationWindow):
 
     def update_webview_theme(self):
         """Inject current theme colors into webview via JavaScript."""
+        if not getattr(self, "webview", None) or not getattr(self, "book", None):
+            return
+        
         # Use current instance colors
         bg = getattr(self, "current_page_bg", "#ffffff")
         fg = getattr(self, "current_text_fg", "#000000")
@@ -3732,6 +3735,54 @@ class EPubViewer(Adw.ApplicationWindow):
             .epub-sidebar {{ background-color: {self.sidebar_bg}; color: {ui_fg}; }}
             .epub-sidebar .adw-action-row:hover {{ background-color: {hover_bg}; }}
             .epub-sidebar .adw-action-row.selected {{ background-color: {sel_bg}; }}
+            
+            /* Comprehensive Annotation Dialog Styling */
+            window.dialog.annotation-dialog,
+            .annotation-dialog,
+            .annotation-dialog headerbar,
+            .annotation-dialog headerbar > box,
+            .annotation-dialog headerbar .title {{
+                background-color: {self.current_page_bg};
+                color: {self.current_text_fg};
+                border-color: {hover_bg};
+            }}
+            
+            /* Remove headerbar default bottom border/shadow if it clashes */
+            .annotation-dialog headerbar {{
+                border-bottom: 1px solid {hover_bg};
+                box-shadow: none;
+            }}
+
+            /* Ensure the content and action areas inherit theme */
+            .annotation-dialog .dialog-vbox,
+            .annotation-dialog .dialog-action-area,
+            .annotation-dialog scrolledwindow {{
+                background-color: {self.current_page_bg};
+                color: {self.current_text_fg};
+            }}
+
+            .annotation-dialog textview,
+            .annotation-dialog textview text {{
+                background-color: {hover_bg};
+                color: {self.current_text_fg};
+                border-radius: 4px;
+            }}
+
+            .color-swatch {{
+                border-radius: 50%;
+                border: 2px solid transparent;
+                margin: 4px;
+                transition: transform 0.1s, border-color 0.2s, box-shadow 0.2s;
+            }}
+            .color-swatch:checked {{
+                border-width: 3px;
+                border-color: {self.current_text_fg};
+                transform: scale(1.15);
+                box-shadow: 0 0 5px {shadow};
+            }}
+            .color-swatch:hover {{
+                border-color: rgba(128,128,128,0.6);
+            }}
             .book-title {{
                 font-weight: bold;
                 font-size: 14px;
@@ -7160,7 +7211,7 @@ class EPubViewer(Adw.ApplicationWindow):
                         if (window.webkit && window.webkit.messageHandlers && 
                             window.webkit.messageHandlers.defineRequest) {
                             window.webkit.messageHandlers.defineRequest.postMessage(JSON.stringify({
-                                word: window.getSelection().toString().trim()
+                                word: window._lastMenuContext.text
                             }));
                         }
                     }));
@@ -10698,6 +10749,7 @@ class EPubViewer(Adw.ApplicationWindow):
     def _show_annotation_dialog(self, selected_text, text_before, text_after, dom_path):
         """Show dialog to add annotation with color selection."""
         dialog = Gtk.Dialog()
+        dialog.add_css_class("annotation-dialog")
         dialog.set_transient_for(self)
         dialog.set_modal(True)
         dialog.set_title("Add Annotation")
@@ -10729,10 +10781,11 @@ class EPubViewer(Adw.ApplicationWindow):
         
         for color_name, color_value in self.highlight_colors.items():
             btn = Gtk.ToggleButton()
-            btn.set_size_request(30, 30)
+            btn.set_size_request(34, 34)
+            btn.add_css_class("color-swatch")
             
-            # Set button color using CSS
-            css = f"button {{ background: {color_value}; }}"
+            # Use inline style only for the background color
+            css = f"button {{ background-color: {color_value}; }}"
             css_provider = Gtk.CssProvider()
             css_provider.load_from_data(css.encode())
             btn.get_style_context().add_provider(css_provider, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
@@ -10759,6 +10812,8 @@ class EPubViewer(Adw.ApplicationWindow):
         note_scroll = Gtk.ScrolledWindow()
         note_scroll.set_min_content_height(100)
         note_scroll.set_child(note_view)
+        # Add a common margin to match the rest of the dialog content
+        note_scroll.set_margin_bottom(10)
         content.append(note_scroll)
         
         # Buttons
