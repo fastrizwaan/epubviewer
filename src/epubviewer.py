@@ -3748,33 +3748,29 @@ class EPubViewer(Adw.ApplicationWindow):
                 margin-right: 12px;
             }}
             
-            /* Enhanced Popover Theme Awareness */
-            popover > contents, 
-            popover menu, 
-            popover box, 
-            popover list, 
-            popover .background {{ 
-                background-color: {self.current_page_bg}; 
-                color: {self.current_text_fg}; 
-                border-color: {hover_bg};
+            /* Refined Popover Theme Awareness */
+            popover > contents {{
+                background-color: {self.current_page_bg};
+                color: {self.current_text_fg};
+                border-radius: 12px;
+                box-shadow: 0 2px 12px {shadow};
+                border: 1px solid {hover_bg};
             }}
             
             popover > arrow {{
                 background-color: {self.current_page_bg};
-                border-color: {hover_bg};
+                border: 1px solid {hover_bg};
             }}
             
-            /* GtkPopover arrow styling for different versions of GTK */
-            popover contents {{
-                padding: 4px;
-                border-radius: 8px;
-                background-color: {self.current_page_bg};
-                box-shadow: 0 2px 12px {shadow};
+            /* Ensure menu items inside popover use correct colors */
+            popover menu, 
+            popover .menu {{
+                background-color: transparent;
+                color: inherit;
             }}
             
-            /* Highlight menu items in popover */
-            popover button:hover, 
-            popover .menu-item:hover, 
+            /* Only highlight actual menu rows/items, not all buttons or boxes */
+            popover modelbutton:hover,
             popover list > row:hover {{
                 background-color: {hover_bg};
             }}
