@@ -810,6 +810,31 @@ class TTSEngine:
             print(f"[error] TTS synthesis error: {e}")
         return None
 
+    def update_playback_params(self, voice=None, speed=None, engine=None):
+        """Update TTS parameters dynamically during playback."""
+        changed = False
+        with self._audio_lock:
+            # Handle engine change
+            if engine and self._tts_backend != engine:
+                self.set_backend(engine)
+                changed = True
+                
+            # Handle voice change
+            if voice and self._tts_voice != voice:
+                self._tts_voice = voice
+                changed = True
+                
+            # Handle speed change
+            if speed is not None and self._tts_speed != speed:
+                self._tts_speed = speed
+                changed = True
+
+            # Update is applied seamlessly to FUTURE sentences only.
+            # We explicitly do NOT clear _active_futures or _audio_files
+            # so that playback does not stutter or interrupt.
+            if changed and hasattr(self, 'is_playing_flag') and self.is_playing_flag and not self.should_stop:
+                print(f"[TTS] Dynamic update triggered (voice={self._tts_voice}, speed={self._tts_speed})")
+
     def _synthesize_with_index(self, idx, sentence, voice, speed, lang):
         """
         Wrapper for synthesize_sentence that includes the index.
@@ -2496,6 +2521,7 @@ class EPubViewer(Adw.ApplicationWindow):
         voice_row.append(Gtk.Label(label="Voice:", xalign=0))
         self.tts_voice_dropdown = Gtk.DropDown.new_from_strings(["Default"])
         self.tts_voice_dropdown.set_hexpand(True)
+        self.tts_voice_dropdown.connect("notify::selected", lambda *args: getattr(self, "_on_tts_voice_changed", lambda: None)())
         voice_row.append(self.tts_voice_dropdown)
         tts_options_box.append(voice_row)
 
@@ -2507,19 +2533,9 @@ class EPubViewer(Adw.ApplicationWindow):
         self.tts_speed_spin.set_digits(1)
         self.tts_speed_spin.set_draw_value(True)
         self.tts_speed_spin.set_hexpand(True)
+        self.tts_speed_spin.connect("value-changed", lambda *args: getattr(self, "_on_tts_speed_changed", lambda: None)())
         speed_row.append(self.tts_speed_spin)
         tts_options_box.append(speed_row)
-
-        # Pitch slider
-        pitch_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
-        pitch_row.append(Gtk.Label(label="Pitch:", xalign=0))
-        pitch_adj = Gtk.Adjustment(value=1.0, lower=0.5, upper=2.0, step_increment=0.1, page_increment=0.5)
-        self.tts_pitch_spin = Gtk.Scale.new(Gtk.Orientation.HORIZONTAL, pitch_adj)
-        self.tts_pitch_spin.set_digits(1)
-        self.tts_pitch_spin.set_draw_value(True)
-        self.tts_pitch_spin.set_hexpand(True)
-        pitch_row.append(self.tts_pitch_spin)
-        tts_options_box.append(pitch_row)
 
         read_box.append(tts_options_box)
         self.side_stack.add_titled(read_box, "read", "Read")
@@ -4811,15 +4827,36 @@ class EPubViewer(Adw.ApplicationWindow):
             item = self.tts_engine_dropdown.get_selected_item()
             if item:
                 engine = item.get_string()
-                self.tts.set_backend(engine)
-                # Update voices
-                voices = self.tts.list_voices()
-                if voices:
-                    self.tts_voice_dropdown.set_model(Gtk.StringList.new(voices))
-                    self.tts_voice_dropdown.set_selected(0)
-                else:
-                    self.tts_voice_dropdown.set_model(Gtk.StringList.new(["Default"]))
-                    self.tts_voice_dropdown.set_selected(0)
+                
+                # Check if it actually changed
+                if self.tts._tts_backend != engine:
+                    self.tts.set_backend(engine)
+                    # Update voices
+                    voices = self.tts.list_voices()
+                    if voices:
+                        self.tts_voice_dropdown.set_model(Gtk.StringList.new(voices))
+                        self.tts_voice_dropdown.set_selected(0)
+                        voice = voices[0]
+                    else:
+                        self.tts_voice_dropdown.set_model(Gtk.StringList.new(["Default"]))
+                        self.tts_voice_dropdown.set_selected(0)
+                        voice = "af_sarah"
+                        
+                    # Push dynamic update back
+                    speed = 1.0
+                    if getattr(self, "tts_speed_spin", None):
+                        speed = self.tts_speed_spin.get_value()
+                    self.tts.update_playback_params(voice=voice, speed=speed, engine=engine)
+
+    def _on_tts_voice_changed(self):
+        if hasattr(self, "tts"):
+            voice, speed = self._get_tts_options()
+            self.tts.update_playback_params(voice=voice, speed=speed)
+
+    def _on_tts_speed_changed(self):
+        if hasattr(self, "tts"):
+            voice, speed = self._get_tts_options()
+            self.tts.update_playback_params(voice=voice, speed=speed)
 
     def _get_tts_options(self):
         voice = "af_sarah"
