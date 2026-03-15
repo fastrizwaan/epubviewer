@@ -285,15 +285,9 @@ _hover_dark_provider.load_from_data(_LIBRARY_HOVER_DARK)
 
 THEME_INJECTION_CSS = """
 .tts-highlight {
-    background: rgba(0,255,0,0.25);
+    background: rgba(127,127,127,0.25);
+    background: color-mix(in srgb, currentColor 15%, transparent);
     border-radius: 4px;
-    transition: background 0.2s ease;
-}
-@media (prefers-color-scheme: dark) {
-    .tts-highlight {
-        background: rgba(0,127,0,0.5);
-        box-shadow: 0 0 0 2px rgba(0,127,0,0.75);
-    }
 }
 """
 
@@ -4990,7 +4984,7 @@ class EPubViewer(Adw.ApplicationWindow):
                 if(!document.querySelector('style[data-tts-style]')) {
                   var st = document.createElement('style');
                   st.dataset.ttsStyle = '1';
-                  st.textContent = '.tts-highlight{background:rgba(0,200,0,0.14);border-radius:4px;} .tts-sentence{display:inline;}';
+                  st.textContent = '.tts-highlight{background:rgba(127,127,127,0.25);background:color-mix(in srgb, currentColor 15%%, transparent);border-radius:4px;} .tts-sentence{display:inline;}';
                   document.head.appendChild(st);
                 }
 
@@ -12366,7 +12360,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     if (!document.querySelector('style[data-tts-style]')) {{
                         var st = document.createElement('style');
                         st.dataset.ttsStyle = '1';
-                        st.textContent = '.tts-highlight{{background:rgba(0,200,0,0.14);border-radius:4px;}} .tts-sentence{{display:inline;}}';
+                        st.textContent = '.tts-highlight{{background:rgba(127,127,127,0.25);background:color-mix(in srgb, currentColor 15%, transparent);border-radius:4px;}} .tts-sentence{{display:inline;}}';
                         document.head.appendChild(st);
                     }}
                     
