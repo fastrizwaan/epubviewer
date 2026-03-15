@@ -397,9 +397,10 @@ class TTSEngine:
         self.Kokoro = None
         self.Gst = None
 
-        # Piper model path
-        self.piper_model_path = piper_model_path or os.environ.get(
-            "PIPER_MODEL_PATH", str(Path.home() / "Downloads/en_US-libritts-high.onnx")
+        # Piper fallback default model path (used ONLY if dynamic download fails)
+        from gi.repository import GLib
+        self.piper_model_path = piper_model_path or os.path.join(
+            GLib.get_user_data_dir(), "piper_models", "en_US-libritts-high.onnx"
         )
 
         # --------------------------------------------------
@@ -407,11 +408,8 @@ class TTSEngine:
         # --------------------------------------------------
         try:
             subprocess.run(["piper", "--help"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-            if os.path.exists(self.piper_model_path):
-                self.PIPER_AVAILABLE = True
-                print(f"[info] Piper available (model: {self.piper_model_path})")
-            else:
-                print(f"[warn] Piper model missing: {self.piper_model_path}")
+            self.PIPER_AVAILABLE = True
+            print("[info] Piper binary available")
         except FileNotFoundError:
             print("[warn] Piper binary not found; skipping Piper support.")
 
@@ -453,15 +451,11 @@ class TTSEngine:
         # --------------------------------------------------
         if self._tts_backend == "kokoro":
             try:
-                model_path = kokoro_model_path or os.environ.get("KOKORO_ONNX_PATH", "/app/share/kokoro-models/kokoro-v1.0.onnx")
-                voices_path = voices_bin_path or os.environ.get("KOKORO_VOICES_PATH", "/app/share/kokoro-models/voices-v1.0.bin")
-                if os.path.exists(model_path) and os.path.exists(voices_path):
-                    self.kokoro = self.Kokoro(model_path, voices_path)
-                    print("[info] Kokoro TTS initialized")
-                else:
-                    print(f"[warn] Kokoro models not found at {model_path}")
+                # We defer loading Kokoro until first use so we can auto-download
+                # Just confirm the module is available.
+                self.kokoro = None
             except Exception as e:
-                print(f"[error] Failed to initialize Kokoro: {e}")
+                print(f"[error] Failed to setup Kokoro: {e}")
                 self.kokoro = None
                 self._tts_backend = "piper" if self.PIPER_AVAILABLE else None
 
@@ -493,6 +487,159 @@ class TTSEngine:
             return
         self._tts_backend = backend
         print(f"[info] TTS backend set to: {backend}")
+
+    def _ensure_kokoro_models(self):
+        """Auto-download Kokoro models if needed and instantiate self.kokoro."""
+        if not self.Kokoro:
+            return False
+        if self.kokoro:
+            return True
+            
+        import urllib.request
+        from gi.repository import GLib
+        
+        # 1. Check if we're running in flatpak and models are pre-bundled
+        app_model_path = "/app/share/kokoro-models/kokoro-v1.0.onnx"
+        app_voices_path = "/app/share/kokoro-models/voices-v1.0.bin"
+        if os.path.exists(app_model_path) and os.path.exists(app_voices_path):
+            try:
+                self.kokoro = self.Kokoro(app_model_path, app_voices_path)
+                print("[info] Kokoro TTS initialized using pre-bundled Flatpak models.")
+                return True
+            except Exception as e:
+                print(f"[error] Failed to load pre-bundled Kokoro models: {e}")
+        
+        # 2. Otherwise use user local directory and auto-download
+        kokoro_dir = os.path.join(GLib.get_user_data_dir(), "kokoro_models")
+        os.makedirs(kokoro_dir, exist_ok=True)
+        
+        model_path = os.path.join(kokoro_dir, "kokoro-v1.0.onnx")
+        voices_path = os.path.join(kokoro_dir, "voices-v1.0.bin")
+        
+        with self._audio_lock:
+            if not os.path.exists(model_path):
+                print(f"[info] Downloading Kokoro model to {model_path} (this is large)...")
+                try:
+                    urllib.request.urlretrieve("https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx", model_path)
+                    print(f"[info] Kokoro model downloaded successfully.")
+                except Exception as e:
+                    print(f"[error] Failed to download Kokoro model: {e}")
+                    return False
+                    
+            if not os.path.exists(voices_path):
+                print(f"[info] Downloading Kokoro voices to {voices_path}...")
+                try:
+                    urllib.request.urlretrieve("https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/voices-v1.0.bin", voices_path)
+                    print(f"[info] Kokoro voices downloaded successfully.")
+                except Exception as e:
+                    print(f"[error] Failed to download Kokoro voices: {e}")
+                    return False
+                    
+        try:
+            self.kokoro = self.Kokoro(model_path, voices_path)
+            print("[info] Kokoro TTS initialized.")
+            return True
+        except Exception as e:
+            print(f"[error] Failed to initialize Kokoro after download: {e}")
+            return False
+
+    def list_voices(self):
+        if self._tts_backend == "kokoro" and self.Kokoro:
+            self._ensure_kokoro_models()
+            return self._load_kokoro_voices()
+        if self._tts_backend == "piper" and self.PIPER_AVAILABLE:
+            return self._load_piper_voices()
+        return []
+
+    def _load_kokoro_voices(self):
+        try:
+            if not self.kokoro:
+                return ["af_sarah", "af_nicole", "af_sky", "am_adam", "bf_emma", "bf_isabella", "bm_george", "bm_lewis"]
+            if hasattr(self.kokoro, "get_voices"):
+                return sorted(self.kokoro.get_voices())
+        except Exception:
+            pass
+        return ["af_sarah", "af_nicole", "af_sky", "am_adam", "bf_emma", "bf_isabella", "bm_george", "bm_lewis"]
+
+    def _resolve_kokoro_voice(self, voice):
+        voices = self._load_kokoro_voices()
+        if not voices:
+            return voice or "af_sarah"
+        if voice in voices:
+            return voice
+        return voices[0]
+
+    def _load_piper_voices(self):
+        voices = [
+            "en_US-lessac-medium",
+            "en_US-ryan-medium",
+            "en_GB-alan-medium",
+            "en_US-libritts-high"
+        ]
+        
+        # Check system/flatpak bundled
+        app_piper_dir = "/app/share/piper"
+        if os.path.exists(app_piper_dir):
+            for f in os.listdir(app_piper_dir):
+                if f.endswith(".onnx"):
+                    name = f[:-5]
+                    if name not in voices:
+                        voices.append(name)
+                        
+        # Check user locally downloaded
+        from gi.repository import GLib
+        piper_dir = os.path.join(GLib.get_user_data_dir(), "piper_models")
+        if os.path.exists(piper_dir):
+            for f in os.listdir(piper_dir):
+                if f.endswith(".onnx"):
+                    name = f[:-5]
+                    if name not in voices:
+                        voices.append(name)
+        return voices
+
+    def _download_piper_voice(self, model_name):
+        import urllib.request
+        with self._audio_lock:
+            # 1. Check if we're running in flatpak/system and model is pre-bundled
+            app_model_onnx = f"/app/share/piper/{model_name}.onnx"
+            app_model_json = f"/app/share/piper/{model_name}.onnx.json"
+            if os.path.exists(app_model_onnx) and os.path.exists(app_model_json):
+                return app_model_onnx
+                
+            # 2. Otherwise local user directory auto-download
+            from gi.repository import GLib
+            piper_dir = os.path.join(GLib.get_user_data_dir(), "piper_models")
+            os.makedirs(piper_dir, exist_ok=True)
+            model_onnx = os.path.join(piper_dir, f"{model_name}.onnx")
+            model_json = os.path.join(piper_dir, f"{model_name}.onnx.json")
+            if os.path.exists(model_onnx) and os.path.exists(model_json):
+                return model_onnx
+            print(f"[info] Downloading Piper model {model_name}...")
+            try:
+                voice_parts = model_name.split('-')
+                if len(voice_parts) >= 3:
+                    lang = voice_parts[0]
+                    speaker = voice_parts[1]
+                    quality = voice_parts[2]
+                else:
+                    lang = "en_US"
+                    speaker = "libritts"
+                    quality = "high"
+                    
+                base_url = f"https://huggingface.co/rhasspy/piper-voices/resolve/main/{lang.split('_')[0]}/{lang}/{speaker}/{quality}/"
+                urllib.request.urlretrieve(base_url + f"{model_name}.onnx", model_onnx)
+                urllib.request.urlretrieve(base_url + f"{model_name}.onnx.json", model_json)
+                print(f"[info] Piper model downloaded to {model_onnx}")
+                return model_onnx
+            except Exception as e:
+                print(f"[error] Error downloading Piper model: {e}")
+                if os.path.exists(model_onnx):
+                    try: os.remove(model_onnx)
+                    except: pass
+                if os.path.exists(model_json):
+                    try: os.remove(model_json)
+                    except: pass
+                return None
 
     def synthesize_piper(self, text, out_path=None):
         """Run Piper TTS and save to file."""
@@ -552,7 +699,11 @@ class TTSEngine:
             # --------------------------------------------------
             # Kokoro backend
             # --------------------------------------------------
-            if self._tts_backend == "kokoro" and self.kokoro:
+            if self._tts_backend == "kokoro" and self.Kokoro:
+                if not self.kokoro and not self._ensure_kokoro_models():
+                    print("[error] Kokoro models could not be loaded/downloaded.")
+                    return None
+                    
                 samples, sample_rate = self.kokoro.create(sentence, voice=voice, speed=speed, lang=lang)
                 import soundfile as sf
                 
@@ -583,9 +734,20 @@ class TTSEngine:
             # Piper backend
             # --------------------------------------------------
             elif self._tts_backend == "piper" and self.PIPER_AVAILABLE:
+                if not voice or voice == "piper":
+                    voice = "en_US-lessac-medium"
+                
+                model_path = self._download_piper_voice(voice)
+                if not model_path:
+                    model_path = self.piper_model_path
+                    if not model_path:
+                        print("[error] Piper model path missing and download failed.")
+                        return None
+                        
                 cmd = [
                     "piper",
-                    "--model", str(self.piper_model_path),
+                    "--model", str(model_path),
+                    "--length_scale", str(max(0.1, 2.0 - float(speed))),
                     "--output_file", out_wav,
                 ]
                 try:
@@ -2286,6 +2448,7 @@ class EPubViewer(Adw.ApplicationWindow):
         read_box.set_hexpand(True)
         # simple label
         read_box.append(Gtk.Label(label="Read (TTS)"))
+
         # TTS control row
         tts_controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         tts_controls.set_halign(Gtk.Align.CENTER)
@@ -2315,6 +2478,50 @@ class EPubViewer(Adw.ApplicationWindow):
         self.tts_next_btn.connect("clicked", lambda b: self._tts_next())
         tts_controls.append(self.tts_next_btn)
         read_box.append(tts_controls)
+
+        # TTS Options
+        tts_options_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        
+        # Engine dropdown
+        engine_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        engine_row.append(Gtk.Label(label="Engine:", xalign=0))
+        self.tts_engine_dropdown = Gtk.DropDown.new_from_strings(["piper", "kokoro"])
+        self.tts_engine_dropdown.set_hexpand(True)
+        self.tts_engine_dropdown.connect("notify::selected", lambda *args: getattr(self, "_on_tts_engine_changed", lambda: None)())
+        engine_row.append(self.tts_engine_dropdown)
+        tts_options_box.append(engine_row)
+
+        # Voice dropdown
+        voice_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        voice_row.append(Gtk.Label(label="Voice:", xalign=0))
+        self.tts_voice_dropdown = Gtk.DropDown.new_from_strings(["Default"])
+        self.tts_voice_dropdown.set_hexpand(True)
+        voice_row.append(self.tts_voice_dropdown)
+        tts_options_box.append(voice_row)
+
+        # Speed slider
+        speed_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        speed_row.append(Gtk.Label(label="Speed:", xalign=0))
+        speed_adj = Gtk.Adjustment(value=1.0, lower=0.5, upper=2.0, step_increment=0.1, page_increment=0.5)
+        self.tts_speed_spin = Gtk.Scale.new(Gtk.Orientation.HORIZONTAL, speed_adj)
+        self.tts_speed_spin.set_digits(1)
+        self.tts_speed_spin.set_draw_value(True)
+        self.tts_speed_spin.set_hexpand(True)
+        speed_row.append(self.tts_speed_spin)
+        tts_options_box.append(speed_row)
+
+        # Pitch slider
+        pitch_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        pitch_row.append(Gtk.Label(label="Pitch:", xalign=0))
+        pitch_adj = Gtk.Adjustment(value=1.0, lower=0.5, upper=2.0, step_increment=0.1, page_increment=0.5)
+        self.tts_pitch_spin = Gtk.Scale.new(Gtk.Orientation.HORIZONTAL, pitch_adj)
+        self.tts_pitch_spin.set_digits(1)
+        self.tts_pitch_spin.set_draw_value(True)
+        self.tts_pitch_spin.set_hexpand(True)
+        pitch_row.append(self.tts_pitch_spin)
+        tts_options_box.append(pitch_row)
+
+        read_box.append(tts_options_box)
         self.side_stack.add_titled(read_box, "read", "Read")
 
         # --- Dictionary tab ---
@@ -3125,6 +3332,8 @@ class EPubViewer(Adw.ApplicationWindow):
         try:
             base_tmp = tempfile.gettempdir()
             self.tts = TTSEngine(webview_getter=lambda: self.webview, base_temp_dir=base_tmp)
+            # Safe call to initialize TTS UI after engine is ready
+            GLib.idle_add(self._init_tts_ui)
         except Exception as e:
             print("TTS engine init failed:", e)
             self.tts = None
@@ -4575,6 +4784,51 @@ class EPubViewer(Adw.ApplicationWindow):
         
         return sentences
 
+    def _init_tts_ui(self):
+        if not hasattr(self, "tts") or not self.tts:
+            return
+        
+        # Set Engine Dropdown based on what's available
+        avail = []
+        if self.tts.PIPER_AVAILABLE:
+            avail.append("piper")
+        if self.tts.Kokoro:
+            avail.append("kokoro")
+        
+        if avail:
+            self.tts_engine_dropdown.set_model(Gtk.StringList.new(avail))
+            # Find index of current backend
+            try:
+                idx = avail.index(self.tts._tts_backend)
+                self.tts_engine_dropdown.set_selected(idx)
+            except ValueError:
+                self.tts_engine_dropdown.set_selected(0)
+            
+            self._on_tts_engine_changed()
+
+    def _on_tts_engine_changed(self):
+        if hasattr(self, "tts") and getattr(self, "tts_engine_dropdown", None):
+            item = self.tts_engine_dropdown.get_selected_item()
+            if item:
+                engine = item.get_string()
+                self.tts.set_backend(engine)
+                # Update voices
+                voices = self.tts.list_voices()
+                if voices:
+                    self.tts_voice_dropdown.set_model(Gtk.StringList.new(voices))
+                    self.tts_voice_dropdown.set_selected(0)
+                else:
+                    self.tts_voice_dropdown.set_model(Gtk.StringList.new(["Default"]))
+                    self.tts_voice_dropdown.set_selected(0)
+
+    def _get_tts_options(self):
+        voice = "af_sarah"
+        if getattr(self, "tts_voice_dropdown", None) and self.tts_voice_dropdown.get_selected_item():
+            voice = self.tts_voice_dropdown.get_selected_item().get_string()
+        speed = 1.0
+        if getattr(self, "tts_speed_spin", None):
+            speed = self.tts_speed_spin.get_value()
+        return voice, speed
 
     def _tts_play(self):
         """Start TTS playback from current chapter (safe wrapper + debug)."""
@@ -4602,9 +4856,14 @@ class EPubViewer(Adw.ApplicationWindow):
             import traceback
             print("[TTS] Error starting playback:", e)
             traceback.print_exc()
+            
+            voice, speed = self._get_tts_options()
+
             try:
                 self.tts.speak_sentences_list(
                     sentences,
+                    voice=voice,
+                    speed=speed,
                     highlight_callback=self._on_tts_highlight,
                     finished_callback=self._on_tts_finished
                 )
@@ -4626,8 +4885,11 @@ class EPubViewer(Adw.ApplicationWindow):
         try:
             if not getattr(self, "webview", None):
                 if auto_start:
+                    v, s = self._get_tts_options()
                     self.tts.speak_sentences_list(
                         sentences,
+                        voice=v,
+                        speed=s,
                         highlight_callback=self._on_tts_highlight,
                         finished_callback=self._on_tts_finished
                     )
@@ -4945,8 +5207,11 @@ class EPubViewer(Adw.ApplicationWindow):
             # Start TTS playback if auto_start is True
             if auto_start:
                 # start TTS after short delay so wrappers apply in order
+                v, s = self._get_tts_options()
                 GLib.timeout_add(250, lambda: (self.tts.speak_sentences_list(
                     sentences,
+                    voice=v,
+                    speed=s,
                     highlight_callback=self._on_tts_highlight,
                     finished_callback=self._on_tts_finished
                 ), False)[1])
@@ -12003,8 +12268,11 @@ class EPubViewer(Adw.ApplicationWindow):
                         # Start TTS after short delay so wrappers apply
                         def start_tts():
                             try:
+                                v, s = self._get_tts_options()
                                 self.tts.speak_sentences_list(
                                     sentences_to_play,
+                                    voice=v,
+                                    speed=s,
                                     highlight_callback=self._on_tts_highlight,
                                     finished_callback=self._on_tts_finished
                                 )

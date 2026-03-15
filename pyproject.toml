@@ -37,6 +37,8 @@ dependencies = [
     "lxml>=4.8.0",
     "kokoro-onnx>=0.3.0",
     "soundfile>=0.12.0",
+    "piper-tts>=1.2.0",
+    "pathvalidate>=3.2.0",
 ]
 
 [project.urls]
