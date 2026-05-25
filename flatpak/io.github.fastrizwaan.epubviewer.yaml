@@ -1,6 +1,6 @@
 app-id: io.github.fastrizwaan.epubviewer
 runtime: org.gnome.Platform
-runtime-version: '48'
+runtime-version: '50'
 sdk: org.gnome.Sdk
 command: epubviewer
 separate-locales: false
@@ -13,7 +13,7 @@ finish-args:
   - --share=network
   - --filesystem=host
   - --device=dri
-  - --env=PYTHONPATH=/app/lib/python3.12/site-packages
+  - --env=PYTHONPATH=/app/lib/python3.13/site-packages
 
 modules:
 
@@ -23,14 +23,14 @@ modules:
       - pip3 install --prefix=/app numpy*.whl
     sources:
       - type: file
-        url: https://files.pythonhosted.org/packages/6e/45/c51cb248e679a6c6ab14b7a8e3ead3f4a3fe7425fc7a6f98b3f147bec532/numpy-2.3.1-cp312-cp312-manylinux_2_28_x86_64.whl
-        sha256: e7cbf5a5eafd8d230a3ce356d892512185230e4781a361229bd902ff403bc660
+        url: https://files.pythonhosted.org/packages/50/30/af1b277b443f2fb08acf1c55ce9d68ee540043f158630d62cef012750f9f/numpy-2.3.1-cp313-cp313-manylinux_2_28_x86_64.whl
+        sha256: 5902660491bd7a48b2ec16c23ccb9124b8abfd9583c5fdfa123fe6b421e03de1
         only-arches: [x86_64]
         x-checker-data: {type: pypi, name: numpy, packagetype: bdist_wheel}
 
       - type: file
-        url: https://files.pythonhosted.org/packages/??/??/numpy-2.3.1-cp312-cp312-manylinux_2_28_aarch64.whl
-        sha256: 8e333040d069eba1652fb08962ec5b76af7f2c7bce1df7e1418c8055cf776f25 :contentReference[oaicite:1]{index=1}
+        url: https://files.pythonhosted.org/packages/bf/0d/1854a4121af895aab383f4aa233748f1df4671ef331d898e32426756a8a6/numpy-2.3.1-cp313-cp313-manylinux_2_28_aarch64.whl
+        sha256: 18703df6c4a4fee55fd3d6e5a253d01c5d33a295409b03fda0c86b3ca2ff41a1
         only-arches: [aarch64]
         x-checker-data: {type: pypi, name: numpy, packagetype: bdist_wheel}
 
@@ -120,8 +120,8 @@ modules:
     - pip3 install --prefix=/app onnxruntime*.whl
     sources:
       - type: file
-        url: https://files.pythonhosted.org/packages/0a/50/519828a5292a6ccd8d5cd6d2f72c6b36ea528a2ef68eca69647732539ffa/onnxruntime-1.22.1-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
-        sha256: 2d39a530aff1ec8d02e365f35e503193991417788641b184f5b1e8c9a6d5ce8d
+        url: https://files.pythonhosted.org/packages/87/9d/45a995437879c18beff26eacc2322f4227224d04c6ac3254dce2e8950190/onnxruntime-1.22.1-cp313-cp313-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl
+        sha256: b0c37070268ba4e02a1a9d28560cd00cd1e94f0d4f275cbef283854f861a65fa
         only-arches:
           - x86_64
         x-checker-data:
@@ -129,8 +129,8 @@ modules:
           name: onnxruntime
           packagetype: bdist_wheel
       - type: file
-        url: https://files.pythonhosted.org/packages/29/e5/00b099b4d4f6223b610421080d0eed9327ef9986785c9141819bbba0d396/onnxruntime-1.22.1-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl
-        sha256: 984cea2a02fcc5dfea44ade9aca9fe0f7a8a2cd6f77c258fc4388238618f3928
+        url: https://files.pythonhosted.org/packages/d2/a6/444291524cb52875b5de980a6e918072514df63a57a7120bf9dfae3aeed1/onnxruntime-1.22.1-cp313-cp313-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl
+        sha256: 460487d83b7056ba98f1f7bac80287224c31d8149b15712b0d6f5078fcc33d0f
         only-arches:
           - aarch64
         x-checker-data:
@@ -196,8 +196,8 @@ modules:
     - pip3 install --prefix=/app regex*.whl
     sources:
       - type: file
-        url: https://files.pythonhosted.org/packages/37/a8/b05ccf33ceca0815a1e253693b2c86544932ebcc0049c16b0fbdf18b688b/regex-2025.7.34-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
-        sha256: e4636a7f3b65a5f340ed9ddf53585c42e3ff37101d383ed321bfe5660481744b
+        url: https://files.pythonhosted.org/packages/ee/f6/4716198dbd0bcc9c45625ac4c81a435d1c4d8ad662e8576dac06bab35b17/regex-2025.7.34-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl
+        sha256: d5273fddf7a3e602695c92716c420c377599ed3c853ea669c1fe26218867002f
         only-arches:
           - x86_64
         x-checker-data:
@@ -205,8 +205,8 @@ modules:
           name: regex
           packagetype: bdist_wheel
       - type: file
-        url: https://files.pythonhosted.org/packages/b0/73/536a216d5f66084fb577bb0543b5cb7de3272eb70a157f0c3a542f1c2551/regex-2025.7.34-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
-        sha256: 739a74970e736df0773788377969c9fea3876c2fc13d0563f98e5503e5185f46
+        url: https://files.pythonhosted.org/packages/be/2f/99dc8f6f756606f0c214d14c7b6c17270b6bbe26d5c1f05cde9dbb1c551f/regex-2025.7.34-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl
+        sha256: 6164b1d99dee1dfad33f301f174d8139d4368a9fb50bf0a3603b2eaf579963ad
         only-arches:
           - aarch64
         x-checker-data:
@@ -351,6 +351,18 @@ modules:
         type: pypi
         name: dlinfo 
         packagetype: bdist_wheel 
+  - name: six
+    buildsystem: simple
+    build-commands: 
+    - pip3 install --prefix=/app six*.whl
+    sources:
+    - type: file
+      url: https://files.pythonhosted.org/packages/b7/ce/149a00dd41f10bc29e5921b496af8b574d8413afcd5e30dfa0ed46c2cc5e/six-1.17.0-py2.py3-none-any.whl
+      sha256: 4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274
+      x-checker-data:
+        type: pypi
+        name: six
+        packagetype: bdist_wheel
 
   - name: python-dateutil 
     buildsystem: simple
@@ -529,8 +541,8 @@ modules:
     - pip3 install --prefix=/app  rpds_py*.whl
     sources:
       - type: file
-        url: https://files.pythonhosted.org/packages/ed/7b/8f4fee9ba1fb5ec856eb22d725a4efa3deb47f769597c809e03578b0f9d9/rpds_py-0.27.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-        sha256: 466bfe65bd932da36ff279ddd92de56b042f2266d752719beb97b08526268ec5
+        url: https://files.pythonhosted.org/packages/03/36/0a14aebbaa26fe7fab4780c76f2239e76cc95a0090bdb25e31d95c492fcd/rpds_py-0.27.1-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+        sha256: 2efe4eb1d01b7f5f1939f4ef30ecea6c6b3521eec451fb93191bf84b2a522418
         only-arches:
           - x86_64
         x-checker-data:
@@ -538,8 +550,8 @@ modules:
           name: rpds-py
           packagetype: bdist_wheel
       - type: file
-        url: https://files.pythonhosted.org/packages/6f/0e/e650e1b81922847a09cca820237b0edee69416a01268b7754d506ade11ad/rpds_py-0.27.1-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
-        sha256: 16323f674c089b0360674a4abd28d5042947d54ba620f72514d69be4ff64845e
+        url: https://files.pythonhosted.org/packages/20/42/ee2b2ca114294cd9847d0ef9c26d2b0851b2e7e00bf14cc4c0b581df0fc3/rpds_py-0.27.1-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
+        sha256: 55266dafa22e672f5a4f65019015f90336ed31c6383bd53f5e7826d21a0e0b83
         only-arches:
           - aarch64
         x-checker-data:
@@ -814,8 +826,8 @@ modules:
     - pip3 install --prefix=/app rpds_py*.whl
     sources:
       - type: file
-        url: https://files.pythonhosted.org/packages/95/ae/5d15c83e337c082d0367053baeb40bfba683f42459f6ebff63a2fd7e5518/rpds_py-0.27.0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-        sha256: 5fa01b3d5e3b7d97efab65bd3d88f164e289ec323a8c033c5c38e53ee25c007e
+        url: https://files.pythonhosted.org/packages/33/cc/6b0ee8f0ba3f2df2daac1beda17fde5cf10897a7d466f252bd184ef20162/rpds_py-0.27.0-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+        sha256: be0744661afbc4099fef7f4e604e7f1ea1be1dd7284f357924af12a705cc7d5c
         only-arches:
           - x86_64
         x-checker-data:
@@ -823,8 +835,8 @@ modules:
           name: rpds-py 
           packagetype: bdist_wheel
       - type: file
-        url: https://files.pythonhosted.org/packages/44/3e/9834b4c8f4f5fe936b479e623832468aa4bd6beb8d014fecaee9eac6cdb1/rpds_py-0.27.0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
-        sha256: 09965b314091829b378b60607022048953e25f0b396c2b70e7c4c81bcecf932e
+        url: https://files.pythonhosted.org/packages/35/8d/7d1e4390dfe09d4213b3175a3f5a817514355cb3524593380733204f20b9/rpds_py-0.27.0-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
+        sha256: 9d0f92b78cfc3b74a42239fdd8c1266f4715b573204c234d2f9fc3fc7a24f185
         only-arches:
           - aarch64
         x-checker-data:
@@ -930,8 +942,8 @@ modules:
     - pip3 install --prefix=/app cffi*.whl
     sources:
       - type: file
-        url: https://files.pythonhosted.org/packages/b2/d5/da47df7004cb17e4955df6a43d14b3b4ae77737dff8bf7f8f333196717bf/cffi-1.17.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
-        sha256: b62ce867176a75d03a665bad002af8e6d54644fad99a3c70905c543130e39d93
+        url: https://files.pythonhosted.org/packages/26/9f/1aab65a6c0db35f43c4d1b4f580e8df53914310afc10ae0397d29d697af4/cffi-1.17.1-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+        sha256: dd398dbc6773384a17fe0d3e7eeb8d1a21c2200473ee6806bb5e6a8e62bb73dd
         only-arches:
           - x86_64
         x-checker-data:
@@ -939,8 +951,8 @@ modules:
           name: cffi
           packagetype: bdist_wheel
       - type: file
-        url: https://files.pythonhosted.org/packages/1a/df/f8d151540d8c200eb1c6fba8cd0dfd40904f1b0682ea705c36e6c2e97ab3/cffi-1.17.1-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
-        sha256: da95af8214998d77a98cc14e3a3bd00aa191526343078b530ceb0bd710fb48a5
+        url: https://files.pythonhosted.org/packages/75/b2/fbaec7c4455c604e29388d55599b99ebcc250a60050610fadde58932b7ee/cffi-1.17.1-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl
+        sha256: 706510fe141c86a69c8ddc029c7910003a17353970cff3b904ff0686a5927683
         only-arches:
           - aarch64
         x-checker-data:
@@ -992,12 +1004,12 @@ modules:
   - name: lxml
     buildsystem: simple
     build-commands: 
-    - pip3 install --target=/app/lib/python3.12/site-packages lxml*.whl
+    - pip3 install --target=/app/lib/python3.13/site-packages lxml*.whl
 
     sources:
       - type: file
-        url: https://files.pythonhosted.org/packages/c6/d1/232b3309a02d60f11e71857778bfcd4acbdb86c07db8260caf7d008b08f8/lxml-6.0.2-cp312-cp312-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl
-        sha256: 90a345bbeaf9d0587a3aaffb7006aa39ccb6ff0e96a57286c0cb2fd1520ea192
+        url: https://files.pythonhosted.org/packages/d0/34/9e591954939276bb679b73773836c6684c22e56d05980e31d52a9a8deb18/lxml-6.0.2-cp313-cp313-manylinux_2_26_x86_64.manylinux_2_28_x86_64.whl
+        sha256: ef9266d2aa545d7374938fb5c484531ef5a2ec7f2d573e62f8ce722c735685fd
         only-arches:
           - x86_64
         x-checker-data:
@@ -1005,8 +1017,8 @@ modules:
           name: lxml
           packagetype: bdist_wheel
       - type: file
-        url: https://files.pythonhosted.org/packages/c8/20/a7760713e65888db79bbae4f6146a6ae5c04e4a204a3c48896c408cd6ed2/lxml-6.0.2-cp312-cp312-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl
-        sha256: c371aa98126a0d4c739ca93ceffa0fd7a5d732e3ac66a46e74339acd4d334564
+        url: https://files.pythonhosted.org/packages/81/76/99de58d81fa702cc0ea7edae4f4640416c2062813a00ff24bd70ac1d9c9b/lxml-6.0.2-cp313-cp313-manylinux_2_26_aarch64.manylinux_2_28_aarch64.whl
+        sha256: eb2a12d704f180a902d7fa778c6d71f36ceb7b0d317f34cdc76a5d05aa1dd1df
         only-arches:
           - aarch64
         x-checker-data:
