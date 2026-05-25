@@ -2375,17 +2375,15 @@ class EPubViewer(Adw.ApplicationWindow):
         self.cover_image.set_halign(Gtk.Align.START)
         self.cover_image.set_hexpand(False)
         self.cover_image.set_vexpand(False)
-        
-        placeholder_pb = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, COVER_W, COVER_H)
-        # Use new API instead of deprecated new_for_pixbuf
-        from gi.repository import Gdk
-        placeholder_tex = Gdk.Texture.new_for_pixbuf(placeholder_pb) if hasattr(Gdk.Texture, 'new_for_pixbuf') else None
-        if placeholder_tex:
-            self.cover_image.set_paintable(placeholder_tex)
-        else:
-            # Fallback for newer GTK versions
-            tex = Gdk.Texture.new_for_pixbuf(placeholder_pb)
-            self.cover_image.set_paintable(tex)
+        pixel_data = bytes([0xdd, 0xdd, 0xdd, 0xff] * (COVER_W * COVER_H))
+        gbytes = GLib.Bytes.new(pixel_data)
+        placeholder_tex = Gdk.MemoryTexture.new(
+            COVER_W, COVER_H,
+            Gdk.MemoryFormat.R8G8B8A8,
+            gbytes,
+            COVER_W * 4
+        )
+        self.cover_image.set_paintable(placeholder_tex)
         try:
             self.cover_image.set_size_request(COVER_W, COVER_H)
         except Exception:
@@ -2584,9 +2582,6 @@ class EPubViewer(Adw.ApplicationWindow):
         search_btn = Gtk.Button(label="Search")
         search_btn.connect("clicked", lambda b: self._perform_search())
         search_entry_box.append(search_btn)
-
-        search_tab_box.append(search_entry_box)
-
         
         # Results info label
         self.search_info_label = Gtk.Label(label="")
@@ -5943,8 +5938,7 @@ class EPubViewer(Adw.ApplicationWindow):
 
     def _create_rounded_cover_texture(self, cover_path, width, height, radius=10):
         try:
-            original_pixbuf = GdkPixbuf.Pixbuf.new_from_file(cover_path)
-            pixbuf = original_pixbuf.scale_simple(width, height, GdkPixbuf.InterpType.BILINEAR)
+            texture = Gdk.Texture.new_from_filename(cover_path)
             surface = cairo.ImageSurface(cairo.FORMAT_ARGB32, width, height)
             context = cairo.Context(surface)
             context.arc(radius, radius, radius, 3.14159, 3 * 3.14159 / 2)
@@ -5952,18 +5946,23 @@ class EPubViewer(Adw.ApplicationWindow):
             context.arc(width - radius, height - radius, radius, 0, 3.14159 / 2)
             context.arc(radius, height - radius, radius, 3.14159 / 2, 3.14159)
             context.close_path()
-            Gdk.cairo_set_source_pixbuf(context, pixbuf, 0, 0)
             context.clip()
+            
+            context.save()
+            context.scale(width / texture.get_width(), height / texture.get_height())
+            Gdk.cairo_set_source_texture(context, texture, 0, 0)
             context.paint()
+            context.restore()
+            
             surface_bytes = surface.get_data()
             gbytes = GLib.Bytes.new(surface_bytes)
-            texture = Gdk.MemoryTexture.new(
+            rounded_texture = Gdk.MemoryTexture.new(
                 width, height,
                 Gdk.MemoryFormat.B8G8R8A8,
                 gbytes,
                 surface.get_stride()
             )
-            return texture
+            return rounded_texture
         except Exception as e:
             print(f"Error creating rounded texture: {e}")
             return None
@@ -6054,13 +6053,15 @@ class EPubViewer(Adw.ApplicationWindow):
                 if texture:
                     img.set_paintable(texture)
                 else:
-                    pb = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, 160, 200)
-                    pb.fill(0xddddddff)
-                    img.set_paintable(Gdk.Texture.new_for_pixbuf(pb))
+                    pixel_data = bytes([0xdd, 0xdd, 0xdd, 0xff] * (160 * 200))
+                    gbytes = GLib.Bytes.new(pixel_data)
+                    tex = Gdk.MemoryTexture.new(160, 200, Gdk.MemoryFormat.R8G8B8A8, gbytes, 160 * 4)
+                    img.set_paintable(tex)
             else:
-                pb = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, 160, 200)
-                pb.fill(0xddddddff)
-                img.set_paintable(Gdk.Texture.new_for_pixbuf(pb))
+                pixel_data = bytes([0xdd, 0xdd, 0xdd, 0xff] * (160 * 200))
+                gbytes = GLib.Bytes.new(pixel_data)
+                tex = Gdk.MemoryTexture.new(160, 200, Gdk.MemoryFormat.R8G8B8A8, gbytes, 160 * 4)
+                img.set_paintable(tex)
 
             img.add_css_class("cover")
             img.set_halign(Gtk.Align.CENTER)
@@ -8141,8 +8142,8 @@ class EPubViewer(Adw.ApplicationWindow):
 
                 if cover_path_to_use and os.path.exists(cover_path_to_use):
                     try:
-                        pix = GdkPixbuf.Pixbuf.new_from_file_at_scale(cover_path_to_use, COVER_W, COVER_H, True)
-                        tex = Gdk.Texture.new_for_pixbuf(pix); self.cover_image.set_paintable(tex)
+                        tex = Gdk.Texture.new_from_filename(cover_path_to_use)
+                        self.cover_image.set_paintable(tex)
                         try: self.cover_image.set_size_request(COVER_W, COVER_H)
                         except Exception: pass
                         self.last_cover_path = cover_path_to_use
@@ -8150,9 +8151,9 @@ class EPubViewer(Adw.ApplicationWindow):
                         self.last_cover_path = None; cover_path_to_use = None
 
                 if not cover_path_to_use and not self.last_cover_path:
-                    placeholder_pb = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, COVER_W, COVER_H)
-                    placeholder_pb.fill(0xddddddff)
-                    placeholder_tex = Gdk.Texture.new_for_pixbuf(placeholder_pb)
+                    pixel_data = bytes([0xdd, 0xdd, 0xdd, 0xff] * (COVER_W * COVER_H))
+                    gbytes = GLib.Bytes.new(pixel_data)
+                    placeholder_tex = Gdk.MemoryTexture.new(COVER_W, COVER_H, Gdk.MemoryFormat.R8G8B8A8, gbytes, COVER_W * 4)
                     self.cover_image.set_paintable(placeholder_tex)
                     try: self.cover_image.set_size_request(COVER_W, COVER_H)
                     except Exception: pass
@@ -9367,9 +9368,10 @@ class EPubViewer(Adw.ApplicationWindow):
             except Exception: pass
         self.book_title.set_text(""); self.book_author.set_text("")
         try:
-            placeholder_pb = GdkPixbuf.Pixbuf.new(GdkPixbuf.Colorspace.RGB, False, 8, COVER_W, COVER_H)
-            placeholder_pb.fill(0xddddddff)
-            self.cover_image.set_paintable(Gdk.Texture.new_for_pixbuf(placeholder_pb))
+            pixel_data = bytes([0xdd, 0xdd, 0xdd, 0xff] * (COVER_W * COVER_H))
+            gbytes = GLib.Bytes.new(pixel_data)
+            placeholder_tex = Gdk.MemoryTexture.new(COVER_W, COVER_H, Gdk.MemoryFormat.R8G8B8A8, gbytes, COVER_W * 4)
+            self.cover_image.set_paintable(placeholder_tex)
         except Exception:
             pass
         try:
