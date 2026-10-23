@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "epubviewer"
-version = "1.0.0"
+version = "1.1"
 description = "A modern GTK4 EPUB reader with multi-column support and TTS capabilities"
 readme = "README.md"
 requires-python = ">=3.8"

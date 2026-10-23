@@ -19,6 +19,7 @@ from ebooklib import epub
 from bs4 import BeautifulSoup, NavigableString, Tag, ProcessingInstruction, element, Comment
 from pathlib import Path
 APP_NAME = "EPUB Viewer"
+APP_VERSION = "1.1"
 os.environ.setdefault("WEBKIT_DISABLE_COMPOSITING_MODE", "1")
 
 # cover target size for sidebar (small)
@@ -3950,6 +3951,22 @@ class EPubViewer(Adw.ApplicationWindow):
             .epub-sidebar .adw-action-row:hover {{ background-color: {hover_bg}; }}
             .epub-sidebar .adw-action-row.selected {{ background-color: {sel_bg}; }}
             
+            /* Keep the About window in sync with the selected reader theme */
+            window.epub-about-window,
+            window.epub-about-window .background,
+            window.epub-about-window headerbar,
+            window.epub-about-window scrolledwindow {{
+                background-color: {self.current_page_bg};
+                color: {self.current_text_fg};
+            }}
+            window.epub-about-window label,
+            window.epub-about-window .title {{
+                color: {self.current_text_fg};
+            }}
+            window.epub-about-window link {{
+                color: {self.current_text_fg};
+            }}
+
             /* Comprehensive Annotation Dialog Styling */
             window.dialog.annotation-dialog,
             .annotation-dialog,
@@ -12622,6 +12639,7 @@ class Application(Adw.Application):
         super().__init__(application_id="io.github.fastrizwaan.epubviewer")
         # simple quit
         self.create_action("quit", self.quit, ["<primary>q"])
+        self.create_action("about", self.on_about)
 
         # create parameterized actions that call into the active window
         def _action_wrapper_win(method_name, variant):
@@ -12668,6 +12686,22 @@ class Application(Adw.Application):
         action.connect("activate", callback)
         self.add_action(action)
         if shortcuts: self.set_accels_for_action(f"app.{name}", shortcuts)
+
+    def on_about(self, action, parameter):
+        """Show the application information window."""
+        win = self.props.active_window
+        about = Adw.AboutWindow(
+            transient_for=win,
+            application_name=APP_NAME,
+            application_icon="io.github.fastrizwaan.epubviewer",
+            version=APP_VERSION,
+            developer_name="Mohammed Asif Ali Rizvan",
+            website="https://github.com/fastrizwaan/epubviewer",
+            issue_url="https://github.com/fastrizwaan/epubviewer/issues",
+            license_type=Gtk.License.GPL_3_0,
+        )
+        about.add_css_class("epub-about-window")
+        about.present()
 
     def on_set_theme(self, action, parameter):
         """Handle app.set-theme('light'|'dark'|'sepia'|'auto')"""
