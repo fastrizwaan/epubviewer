@@ -6849,7 +6849,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     const pageWidth = columnWidth + gap;
                     
                     // Calculate TOTAL columns in the entire document
-                    const totalColumns = Math.max(1, Math.round(scrollWidth / pageWidth));
+                    const totalColumns = Math.max(viewportColCount, Math.round((scrollWidth - paddingLeft - paddingRight + gap) / pageWidth));
                     
                     // Maximum column index we can scroll to:
                     // We scroll by viewportColCount columns at a time, so the last
