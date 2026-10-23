@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 
 # --- Standard Library Imports ---
-import glob, hashlib, json, os, pathlib, re, shutil, tempfile, threading, time, traceback, urllib.parse, zipfile
+import glob, hashlib, json, os, pathlib, re, shutil, tempfile, threading, time, traceback, unicodedata, urllib.parse, zipfile
 
 # --- GTK and related Imports ---
 import gi
@@ -5339,11 +5339,11 @@ class EPubViewer(Adw.ApplicationWindow):
                       var pageWidth = columnWidth + gap;
                       
                       // Calculate which column the element is in
-                      var elementLeft = elementRect.left - containerRect.left + container.scrollLeft;
+                      var elementLeft = elementRect.left - containerRect.left + window.getLogicalScrollLeft(container);
                       var elementColumn = Math.floor(elementLeft / pageWidth);
                       
                       // Check if element is visible in current viewport
-                      var currentScrollLeft = container.scrollLeft;
+                      var currentScrollLeft = window.getLogicalScrollLeft(container);
                       var viewportRight = currentScrollLeft + container.clientWidth;
                       var elementRight = elementLeft + elementRect.width;
                       
@@ -5359,7 +5359,7 @@ class EPubViewer(Adw.ApplicationWindow):
                         console.log('[TTS] Auto-scroll to column ' + elementColumn + ' (scroll: ' + targetScroll.toFixed(0) + 'px)');
                         
                         // Smooth scroll to column
-                        var start = container.scrollLeft;
+                        var start = window.getLogicalScrollLeft(container);
                         var distance = targetScroll - start;
                         var duration = 350;
                         var startTime = performance.now();
@@ -5368,7 +5368,7 @@ class EPubViewer(Adw.ApplicationWindow):
                           var elapsed = time - startTime;
                           var t = Math.min(elapsed / duration, 1);
                           var ease = t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
-                          container.scrollLeft = start + distance * ease;
+                          window.setLogicalScrollLeft(container, start + distance * ease);
                           if(t < 1) requestAnimationFrame(animateScroll);
                         }}
                         requestAnimationFrame(animateScroll);
@@ -5571,7 +5571,7 @@ class EPubViewer(Adw.ApplicationWindow):
                 function getCurrentCol() {{
                     const metrics = getMetrics();
                     if (!metrics || metrics.colCount <= 1) return 0;
-                    const scrollLeft = metrics.container.scrollLeft;
+                    const scrollLeft = window.getLogicalScrollLeft(metrics.container);
                     return Math.round(scrollLeft / metrics.pageWidth);
                 }}
                 
@@ -5582,7 +5582,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     const targetScroll = index * metrics.pageWidth;
                     const maxScroll = metrics.container.scrollWidth - metrics.clientWidth;
                     const clampedScroll = Math.max(0, Math.min(maxScroll, targetScroll));
-                    metrics.container.scrollLeft = clampedScroll;
+                    window.setLogicalScrollLeft(metrics.container, clampedScroll);
                     console.log('→ Column ' + index + ' (scroll: ' + clampedScroll.toFixed(0) + 'px, maxScroll: ' + maxScroll.toFixed(0) + 'px)');
                 }}
                 
@@ -5630,8 +5630,10 @@ class EPubViewer(Adw.ApplicationWindow):
                         height: 100vh;
                         overflow-x: hidden;
                         overflow-y: auto;
+                        clip-path: inset(0);
                         box-sizing: border-box;
                         position: relative;
+                        direction: ${{window.isRtlBook ? 'rtl' : 'ltr'}} !important;
                     `;
                     window.isSingleColumnMode = true;
                     
@@ -5656,8 +5658,10 @@ class EPubViewer(Adw.ApplicationWindow):
                         height: 100vh;
                         overflow-x: hidden;
                         overflow-y: hidden;
+                        clip-path: inset(0);
                         box-sizing: border-box;
                         position: relative;
+                        direction: ${{window.isRtlBook ? 'rtl' : 'ltr'}} !important;
                     `;
                     window.isSingleColumnMode = false;
                     
@@ -6619,7 +6623,23 @@ class EPubViewer(Adw.ApplicationWindow):
             current_fg = getattr(self, "current_text_fg", "#000000")
 
             bg_theme_decl = f"background-color: {current_bg} !important; color: {current_fg} !important;"
-
+            try:
+                language = (self._extract_metadata().get("language") or "").strip().lower()
+            except Exception:
+                language = ""
+            rtl_languages = {"ar", "fa", "he", "iw", "ps", "ur", "yi", "sd", "ug", "ku"}
+            is_rtl_book = language.replace("_", "-").split("-")[0] in rtl_languages
+            if not is_rtl_book:
+                # Many EPUBs omit dc:language. Infer direction from the chapter
+                # text so Hebrew and Arabic books still get RTL page progression.
+                try:
+                    chapter_text = BeautifulSoup(raw_html or "", "html.parser").get_text(" ", strip=True)[:8000]
+                    rtl_count = sum(unicodedata.bidirectional(ch) in ("R", "AL") for ch in chapter_text)
+                    ltr_count = sum(unicodedata.bidirectional(ch) == "L" for ch in chapter_text)
+                    is_rtl_book = rtl_count >= 8 and rtl_count > ltr_count * 0.2
+                except Exception:
+                    pass
+            text_direction = "rtl" if is_rtl_book else "ltr"
 
             # Always use column-width mode
             col_decl = "column-width: {}px; -webkit-column-width: {}px;".format(self.column_width_px, self.column_width_px)
@@ -6676,6 +6696,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     /* Important for columns to work */
                     box-sizing: border-box;
                     position: relative;
+                    direction: {text_direction} !important;
                 }}
                 .ebook-content img, .ebook-content svg {{
                     max-width: 100%;
@@ -6824,6 +6845,14 @@ class EPubViewer(Adw.ApplicationWindow):
                 
                 window.currentColumnWidth = {self.column_width_px};
                 window.currentGap = {getattr(self, "_column_gap", 50)};
+                window.isRtlBook = {str(is_rtl_book).lower()};
+                window.getLogicalScrollLeft = function(element) {{
+                    const value = element ? element.scrollLeft : 0;
+                    return window.isRtlBook ? Math.max(0, -value) : Math.max(0, value);
+                }};
+                window.setLogicalScrollLeft = function(element, value) {{
+                    if (element) element.scrollLeft = window.isRtlBook ? -Math.max(0, value) : Math.max(0, value);
+                }};
                 window.currentPadding = {{
                     top: {getattr(self, "page_margin_top", 50)},
                     right: {getattr(self, "page_margin_right", 50)},
@@ -6886,7 +6915,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     const metrics = getContainerMetrics();
                     if (!metrics || metrics.colCount <= 1) return 0;
                     
-                    const scrollLeft = metrics.container.scrollLeft;
+                    const scrollLeft = window.getLogicalScrollLeft(metrics.container);
                     const columnIndex = Math.round(scrollLeft / metrics.pageWidth);
                     return Math.min(columnIndex, metrics.maxCol);
                 }};
@@ -6902,7 +6931,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     if (smooth) {{
                         smoothScrollTo(targetScroll, metrics.container.scrollTop);
                     }} else {{
-                        metrics.container.scrollLeft = targetScroll;
+                        window.setLogicalScrollLeft(metrics.container, targetScroll);
                     }}
                     
                     console.log('→ Column ' + targetCol + ' (scroll: ' + targetScroll.toFixed(0) + 'px, max: ' + metrics.maxCol + ')');
@@ -6912,14 +6941,14 @@ class EPubViewer(Adw.ApplicationWindow):
                     const container = document.querySelector('.ebook-content');
                     if (!container) return;
                     
-                    const startX = container.scrollLeft;
+                    const startX = window.getLogicalScrollLeft(container);
                     const startY = container.scrollTop;
                     const distX = xTarget - startX;
                     const distY = yTarget - startY;
                     
                     // Skip animation if distance is tiny
                     if (Math.abs(distX) < 1 && Math.abs(distY) < 1) {{
-                        container.scrollLeft = xTarget;
+                        window.setLogicalScrollLeft(container, xTarget);
                         container.scrollTop = yTarget;
                         return;
                     }}
@@ -6930,7 +6959,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     function step(time) {{
                         const t = Math.min((time - start) / duration, 1);
                         const ease = t < 0.5 ? 4*t*t*t : 1 - Math.pow(-2*t+2, 3)/2;
-                        container.scrollLeft = startX + distX * ease;
+                        window.setLogicalScrollLeft(container, startX + distX * ease);
                         container.scrollTop = startY + distY * ease;
                         if (t < 1) requestAnimationFrame(step);
                     }}
@@ -6941,14 +6970,14 @@ class EPubViewer(Adw.ApplicationWindow):
                     const metrics = getContainerMetrics();
                     if (!metrics || metrics.colCount <= 1) return;
                     
-                    const currentScroll = metrics.container.scrollLeft;
+                    const currentScroll = window.getLogicalScrollLeft(metrics.container);
                     const columnIndex = Math.round(currentScroll / metrics.pageWidth);
                     const clampedIndex = Math.max(0, Math.min(columnIndex, metrics.maxCol));
                     const targetScroll = clampedIndex * metrics.pageWidth;
                     
                     if (Math.abs(targetScroll - currentScroll) > 2) {{
                         console.log('↹ Snap to col ' + clampedIndex + ' (' + currentScroll.toFixed(0) + '→' + targetScroll.toFixed(0) + ')');
-                        metrics.container.scrollLeft = targetScroll;
+                        window.setLogicalScrollLeft(metrics.container, targetScroll);
                     }}
                 }}
                 window.snapScroll = snapScroll;
@@ -6964,7 +6993,7 @@ class EPubViewer(Adw.ApplicationWindow):
                         const rootLeft = window.pageXOffset || window.scrollX || doc.scrollLeft || body.scrollLeft || 0;
                         const rootTop = window.pageYOffset || window.scrollY || doc.scrollTop || body.scrollTop || 0;
                         return {{
-                            left: Math.round(Math.max(container.scrollLeft || 0, rootLeft || 0)),
+                            left: Math.round(Math.max(window.getLogicalScrollLeft(container), Math.abs(rootLeft || 0))),
                             top: Math.round(Math.max(container.scrollTop || 0, rootTop || 0))
                         }};
                     }};
@@ -7125,7 +7154,7 @@ class EPubViewer(Adw.ApplicationWindow):
                         const rootClientHeight = window.innerHeight || doc.clientHeight || body.clientHeight || 0;
                         
                         const mode = window.isSingleColumnMode ? 'single' : 'multi';
-                        let scrollLeft = Math.round(Math.max(container.scrollLeft || 0, rootLeft || 0));
+                        let scrollLeft = Math.round(Math.max(window.getLogicalScrollLeft(container), Math.abs(rootLeft || 0)));
                         let scrollTop = Math.round(Math.max(container.scrollTop || 0, rootTop || 0));
                         let percentage = 0;
                         let columnIndex = null;
@@ -7263,12 +7292,12 @@ class EPubViewer(Adw.ApplicationWindow):
                         switch(e.key) {{
                             case 'ArrowLeft': 
                                 e.preventDefault(); 
-                                targetCol = Math.max(0, currentCol - 1); 
+                                targetCol = Math.max(0, currentCol + (window.isRtlBook ? 1 : -1)); 
                                 scroll = true; 
                                 break;
                             case 'ArrowRight': 
                                 e.preventDefault(); 
-                                targetCol = Math.min(maxCol, currentCol + 1); 
+                                targetCol = Math.min(maxCol, currentCol + (window.isRtlBook ? -1 : 1)); 
                                 scroll = true; 
                                 break;
                             case 'PageUp': 
@@ -7358,8 +7387,10 @@ class EPubViewer(Adw.ApplicationWindow):
                             height: 100vh;
                             overflow-x: hidden;
                             overflow-y: auto;
+                            clip-path: inset(0);
                             box-sizing: border-box;
                             position: relative;
+                            direction: ${{window.isRtlBook ? 'rtl' : 'ltr'}} !important;
                         `;
                         window.isSingleColumnMode = true;
                         
@@ -7387,8 +7418,10 @@ class EPubViewer(Adw.ApplicationWindow):
                                 height: 100vh;
                                 overflow-x: hidden;
                                 overflow-y: hidden;
+                                clip-path: inset(0);
                                 box-sizing: border-box;
                                 position: relative;
+                                direction: ${{window.isRtlBook ? 'rtl' : 'ltr'}} !important;
                             `;
                             window.isSingleColumnMode = false;
                             
@@ -8932,7 +8965,7 @@ class EPubViewer(Adw.ApplicationWindow):
                 var containerRect = container.getBoundingClientRect();
 
                 // Element's position relative to container content (accounting for scroll)
-                var elementLeft = rect.left - containerRect.left + container.scrollLeft;
+                var elementLeft = rect.left - containerRect.left + window.getLogicalScrollLeft(container);
 
                 // Determine which column this falls in
                 var colIndex = Math.floor(elementLeft / metrics.pageWidth);
@@ -8943,7 +8976,7 @@ class EPubViewer(Adw.ApplicationWindow):
                 if (typeof scrollToColumnIndex === 'function') {{
                     scrollToColumnIndex(colIndex, true);
                 }} else {{
-                    container.scrollLeft = colIndex * metrics.pageWidth;
+                    window.setLogicalScrollLeft(container, colIndex * metrics.pageWidth);
                 }}
             }})();
             """
@@ -9118,7 +9151,7 @@ class EPubViewer(Adw.ApplicationWindow):
                         if (typeof scrollToColumnIndex === 'function') {{
                             scrollToColumnIndex(targetCol, false);
                         }} else {{
-                            metrics.container.scrollLeft = targetCol * metrics.pageWidth;
+                            window.setLogicalScrollLeft(metrics.container, targetCol * metrics.pageWidth);
                         }}
                     }}
                 }}
@@ -9243,7 +9276,7 @@ class EPubViewer(Adw.ApplicationWindow):
 
             // Multi-column: page by visible viewport width.
             const viewW = container.clientWidth || window.innerWidth || 0;
-            const currentX = container.scrollLeft || 0;
+            const currentX = window.getLogicalScrollLeft(container);
             let effectiveMaxX = Math.max(0, (container.scrollWidth || 0) - viewW);
             // Exclude trailing spacer column from button paging "end" detection.
             try {{
@@ -9259,7 +9292,7 @@ class EPubViewer(Adw.ApplicationWindow):
             const targetX = Math.max(0, Math.min(effectiveMaxX, currentX + direction * viewW * 0.95));
 
             if (Math.abs(targetX - currentX) > 1) {{
-                container.scrollLeft = targetX;
+                window.setLogicalScrollLeft(container, targetX);
                 if (typeof window.snapScroll === 'function') {{
                     window.snapScroll();
                 }}
@@ -9889,11 +9922,11 @@ class EPubViewer(Adw.ApplicationWindow):
                             if (typeof scrollToColumnIndex === 'function') {
                                 scrollToColumnIndex(savedColIndex, false);
                             } else {
-                                container.scrollLeft = savedLeft;
+                                window.setLogicalScrollLeft(container, savedLeft);
                             }
                         } else {
                             console.log('✓ Restoring scrollLeft:', savedLeft);
-                            container.scrollLeft = savedLeft;
+                            window.setLogicalScrollLeft(container, savedLeft);
                         }
                         container.scrollTop = 0;
                     } else {
@@ -9934,7 +9967,7 @@ class EPubViewer(Adw.ApplicationWindow):
                             const maxScroll = metrics.container.scrollWidth - metrics.clientWidth;
                             const targetScroll = Math.round(maxScroll * savedPercentage);
                             console.log('Calculated scroll position:', targetScroll, 'of', maxScroll);
-                            container.scrollLeft = targetScroll;
+                            window.setLogicalScrollLeft(container, targetScroll);
                             container.scrollTop = 0;
                         } else {
                             console.log('❌ Could not get metrics');
@@ -10089,7 +10122,7 @@ class EPubViewer(Adw.ApplicationWindow):
                         const m = window.getContainerMetrics();
                         if (m && m.colCount > 1) {
                             const containerRect = container.getBoundingClientRect();
-                            const relLeft = container.scrollLeft + rect.left - containerRect.left;
+                            const relLeft = window.getLogicalScrollLeft(container) + rect.left - containerRect.left;
                             const colIdx = Math.floor(relLeft / m.pageWidth);
                             window.scrollToColumnIndex(colIdx, false);
                         } else {
@@ -10263,7 +10296,7 @@ class EPubViewer(Adw.ApplicationWindow):
             "      if (m && m.colCount > 1) {\n"
             "          const rect = target.getBoundingClientRect();\n"
             "          const containerRect = container.getBoundingClientRect();\n"
-            "          const relLeft = container.scrollLeft + rect.left - containerRect.left;\n"
+            "          const relLeft = window.getLogicalScrollLeft(container) + rect.left - containerRect.left;\n"
             "          const colIdx = Math.floor(relLeft / m.pageWidth);\n"
             "          window.scrollToColumnIndex(colIdx, false);\n"
             "          return '1';\n"
