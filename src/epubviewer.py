@@ -6049,10 +6049,14 @@ class EPubViewer(Adw.ApplicationWindow):
             img.set_can_shrink(True)
 
             if cover and os.path.exists(cover):
-                texture = self._create_rounded_cover_texture(cover, 140, 210, radius=10)
-                if texture:
-                    img.set_paintable(texture)
-                else:
+                # Scale the paintable to the grid's cover bounds so a source
+                # image's intrinsic size cannot enlarge its FlowBox child.
+                try:
+                    pixbuf = GdkPixbuf.Pixbuf.new_from_file_at_scale(cover, 140, 210, True)
+                    img.set_paintable(Gdk.Texture.new_for_pixbuf(pixbuf))
+                    img.set_content_fit(Gtk.ContentFit.CONTAIN)
+                except Exception as e:
+                    print(f"Error loading library cover {cover}: {e}")
                     pixel_data = bytes([0xdd, 0xdd, 0xdd, 0xff] * (160 * 200))
                     gbytes = GLib.Bytes.new(pixel_data)
                     tex = Gdk.MemoryTexture.new(160, 200, Gdk.MemoryFormat.R8G8B8A8, gbytes, 160 * 4)
@@ -6667,6 +6671,7 @@ class EPubViewer(Adw.ApplicationWindow):
                     /* Keep horizontal bar hidden; multi-column horizontal movement is JS-driven */
                     overflow-x: hidden;
                     overflow-y: auto;
+                    clip-path: inset(0);
                     
                     /* Important for columns to work */
                     box-sizing: border-box;
